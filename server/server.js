@@ -668,18 +668,22 @@ app.get('/api/next/:videoId', async (req, res) => {
     const url = 'https://music.youtube.com/youtubei/v1/next?prettyPrint=false';
     const headers = {
       'Content-Type': 'application/json',
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36',
+      'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64; rv:156.0) Gecko/20100101 Firefox/156.0',
       'Origin': 'https://music.youtube.com',
-      'Referer': 'https://music.youtube.com/'
+      'Referer': 'https://music.youtube.com/',
+      'X-Youtube-Client-Name': '67',
+      'X-Youtube-Client-Version': '1.20260927.17.00',
+      'Accept': '*/*',
+      'Accept-Language': 'en-US,en;q=0.9'
     };
 
     const clientContext = {
       client: {
         clientName: 'WEB_REMIX',
-        clientVersion: '1.20251215.03.00',
+        clientVersion: '1.20260927.17.00',
         hl: 'en',
         gl: 'US',
-        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36'
+        userAgent: 'Mozilla/5.0 (X11; Linux x86_64; rv:156.0) Gecko/20100101 Firefox/156.0'
       }
     };
 
@@ -714,97 +718,131 @@ app.get('/api/next/:videoId', async (req, res) => {
       });
     }
 
-    if (!response.ok) {
-      console.warn(`Next API error: ${response.status}`);
-      return res.json([]);
-    }
-
-    const data = await response.json();
     const queue = [];
 
-    try {
-      const panelRenderer = data?.contents?.singleColumnMusicWatchNextResultsRenderer?.tabbedRenderer?.watchNextTabbedResultsRenderer?.tabs?.[0]?.tabRenderer?.content?.musicQueueRenderer?.content?.playlistPanelRenderer;
-      const contents = panelRenderer?.contents || [];
-      let playlistId = panelRenderer?.playlistId;
+    if (response.ok) {
+      const data = await response.json();
 
-      console.log(`🔍 Processing ${contents.length} items from queue for videoId: ${videoId}`);
+      try {
+        const panelRenderer = data?.contents?.singleColumnMusicWatchNextResultsRenderer?.tabbedRenderer?.watchNextTabbedResultsRenderer?.tabs?.[0]?.tabRenderer?.content?.musicQueueRenderer?.content?.playlistPanelRenderer;
+        const contents = panelRenderer?.contents || [];
+        let playlistId = panelRenderer?.playlistId;
 
-      for (const item of contents) {
-        const renderer = item.playlistPanelVideoRenderer;
+        console.log(`🔍 Processing ${contents.length} items from queue for videoId: ${videoId}`);
 
-        // Check for automix preview
-        if (!renderer && item.automixPreviewVideoRenderer) {
-          const automixPlaylistId = item.automixPreviewVideoRenderer?.content?.automixPlaylistVideoRenderer?.navigationEndpoint?.watchPlaylistEndpoint?.playlistId;
-          if (automixPlaylistId) {
-            playlistId = automixPlaylistId;
+        for (const item of contents) {
+          const renderer = item.playlistPanelVideoRenderer;
+
+          // Check for automix preview
+          if (!renderer && item.automixPreviewVideoRenderer) {
+            const automixPlaylistId = item.automixPreviewVideoRenderer?.content?.automixPlaylistVideoRenderer?.navigationEndpoint?.watchPlaylistEndpoint?.playlistId;
+            if (automixPlaylistId) {
+              playlistId = automixPlaylistId;
+            }
+            continue;
           }
-          continue;
-        }
 
-        if (!renderer) continue;
+          if (!renderer) continue;
 
-        const itemVideoId = renderer.videoId;
-        const title = renderer.title?.runs?.[0]?.text || '';
-        const artist = renderer.longBylineText?.runs?.[0]?.text || 'Unknown Artist';
-        const thumbnail = renderer.thumbnail?.thumbnails?.slice(-1)[0]?.url || '';
+          const itemVideoId = renderer.videoId;
+          const title = renderer.title?.runs?.[0]?.text || '';
+          const artist = renderer.longBylineText?.runs?.[0]?.text || 'Unknown Artist';
+          const thumbnail = renderer.thumbnail?.thumbnails?.slice(-1)[0]?.url || '';
 
-        // Skip the currently playing song (marked as selected)
-        if (renderer.selected || itemVideoId === videoId) {
-          continue;
-        }
-
-        // Filter out non-music items
-        const musicVideoType = renderer.navigationEndpoint?.watchEndpoint?.watchEndpointMusicSupportedConfigs?.watchEndpointMusicConfig?.musicVideoType;
-        const itemPlaylistId = renderer.navigationEndpoint?.watchEndpoint?.playlistId;
-        const isMusic = musicVideoType || itemPlaylistId || title.length < 100;
-
-        if (!isMusic) continue;
-
-        if (itemVideoId && title) {
-          queue.push({
-            id: itemVideoId,
-            youtubeId: itemVideoId,
-            title,
-            artist,
-            cover: thumbnail
-          });
-        }
-      }
-
-      // If queue is empty but we have a playlistId, fetch songs from the playlist
-      if (queue.length === 0 && playlistId) {
-        console.log(`📋 Queue empty, fetching songs from playlist: ${playlistId}`);
-        try {
-          const playlistPayload = {
-            context: clientContext,
-            browseId: `VL${playlistId}`
-          };
-
-          const playlistResponse = await fetchFn('https://music.youtube.com/youtubei/v1/browse?prettyPrint=false', {
-            method: 'POST',
-            headers: headers,
-            body: JSON.stringify(playlistPayload)
-          });
-
-          if (playlistResponse.ok) {
-            const playlistData = await playlistResponse.json();
-            const playlistSongs = parseBrowseSongs(playlistData);
-
-            // Filter out the current song
-            const filteredSongs = playlistSongs.filter(s => s.id !== videoId);
-            queue.push(...filteredSongs.slice(0, 20));
+          // Skip the currently playing song (marked as selected)
+          if (renderer.selected || itemVideoId === videoId) {
+            continue;
           }
-        } catch (playlistError) {
-          console.error('Error fetching playlist:', playlistError);
-        }
-      }
 
-      console.log(`✅ Found ${queue.length} music songs in queue for ${videoId}`);
-      res.json(queue);
-    } catch (parseError) {
-      console.error('Error parsing queue:', parseError);
-      res.json([]);
+          // Filter out non-music items
+          const musicVideoType = renderer.navigationEndpoint?.watchEndpoint?.watchEndpointMusicSupportedConfigs?.watchEndpointMusicConfig?.musicVideoType;
+          const itemPlaylistId = renderer.navigationEndpoint?.watchEndpoint?.playlistId;
+          const isMusic = musicVideoType || itemPlaylistId || title.length < 100;
+
+          if (!isMusic) continue;
+
+          if (itemVideoId && title) {
+            queue.push({
+              id: itemVideoId,
+              youtubeId: itemVideoId,
+              title,
+              artist,
+              cover: thumbnail
+            });
+          }
+        }
+
+        // If queue is empty but we have a playlistId, fetch songs from the playlist
+        if (queue.length === 0 && playlistId) {
+          console.log(`📋 Queue empty, fetching songs from playlist: ${playlistId}`);
+          try {
+            const playlistPayload = {
+              context: clientContext,
+              browseId: `VL${playlistId}`
+            };
+
+            const playlistResponse = await fetchFn('https://music.youtube.com/youtubei/v1/browse?prettyPrint=false', {
+              method: 'POST',
+              headers: headers,
+              body: JSON.stringify(playlistPayload)
+            });
+
+            if (playlistResponse.ok) {
+              const playlistData = await playlistResponse.json();
+              const playlistSongs = parseBrowseSongs(playlistData);
+
+              // Filter out the current song
+              const filteredSongs = playlistSongs.filter(s => s.id !== videoId);
+              queue.push(...filteredSongs.slice(0, 20));
+            }
+          } catch (playlistError) {
+            console.error('Error fetching playlist:', playlistError);
+          }
+        }
+      } catch (parseError) {
+        console.error('Error parsing queue:', parseError);
+      }
     }
+
+    // 🚀 BULLETPROOF FALLBACK: If YouTube radio returned 0 items (e.g. cloud datacenter IP blocked on next),
+    // find related tracks using searchYouTubeMusic so the user's queue is NEVER empty!
+    if (queue.length === 0) {
+      console.log(`⚠️ Radio queue empty for ${videoId}, initiating smart search fallback...`);
+      try {
+        let searchQuery = '';
+        const titleParam = req.query.title;
+        const artistParam = req.query.artist;
+
+        if (artistParam && artistParam !== 'Unknown Artist') {
+          searchQuery = `${artistParam} songs`;
+        } else if (titleParam) {
+          searchQuery = titleParam;
+        } else {
+          // Fast public oEmbed to get title and artist
+          const oembedRes = await fetchFn(`https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`);
+          if (oembedRes.ok) {
+            const oembedData = await oembedRes.json();
+            const author = (oembedData.author_name || '').replace(/\s*-\s*Topic$/i, '').trim();
+            searchQuery = author ? `${author} songs` : (oembedData.title || '');
+          }
+        }
+
+        if (searchQuery) {
+          console.log(`🔍 Searching fallback songs for query: "${searchQuery}"`);
+          const searchResults = await searchYouTubeMusic(searchQuery, 30);
+          if (searchResults && Array.isArray(searchResults.songs)) {
+            const fallbackSongs = searchResults.songs.filter(s => s.id !== videoId && s.youtubeId !== videoId);
+            queue.push(...fallbackSongs);
+            console.log(`✨ Fallback loaded ${queue.length} songs for queue`);
+          }
+        }
+      } catch (fallbackErr) {
+        console.error('Fallback search error:', fallbackErr);
+      }
+    }
+
+    console.log(`✅ Returning ${queue.length} music songs in queue for ${videoId}`);
+    res.json(queue);
   } catch (error) {
     console.error('Error fetching next songs:', error);
     res.json([]);

@@ -12,10 +12,14 @@ import { ChevronLeftIcon, ChevronRightIcon } from './components/ScrollButton';
 import { updateSEOForView, addSongStructuredData, preloadCriticalResources } from './utils/seo';
 
 // API Helper Functions (using server)
-const fetchNextSongs = async (videoId) => {
+const fetchNextSongs = async (videoId, title = '', artist = '') => {
   try {
-    console.log(`⏭️ Fetching next songs for: ${videoId}`);
-    const response = await fetch(getApiUrl(`/api/next/${videoId}`));
+    console.log(`⏭️ Fetching next songs for: ${videoId} (${title} by ${artist})`);
+    const params = new URLSearchParams();
+    if (title) params.append('title', title);
+    if (artist) params.append('artist', artist);
+    const qs = params.toString() ? `?${params.toString()}` : '';
+    const response = await fetch(getApiUrl(`/api/next/${videoId}${qs}`));
     if (!response.ok) {
       console.warn(`Next API error: ${response.status}`);
       return [];
@@ -429,7 +433,7 @@ function App() {
     if (fetchNewQueue && song.youtubeId) {
       try {
         console.log(`📡 Fetching queue for video ID: ${song.youtubeId}`);
-        const nextSongs = await fetchNextSongs(song.youtubeId);
+        const nextSongs = await fetchNextSongs(song.youtubeId, song.title, song.artist);
         
         setQueue(prevQueue => {
           // If the queue has been replaced by another song play, ignore this response
@@ -550,7 +554,7 @@ function App() {
       if (songsRemaining <= 3 && nextSong.youtubeId) {
         try {
           console.log(`🔄 Approaching end of queue (${songsRemaining} songs left), extending queue...`);
-          const moreSongs = await fetchNextSongs(nextSong.youtubeId);
+          const moreSongs = await fetchNextSongs(nextSong.youtubeId, nextSong.title, nextSong.artist);
 
           if (moreSongs.length > 0) {
             // Filter out songs already in queue to avoid duplicates
@@ -664,7 +668,7 @@ function App() {
 
     console.log(`🔄 Refreshing queue for: "${currentSong.title}"`);
     try {
-      const nextSongs = await fetchNextSongs(currentSong.youtubeId);
+      const nextSongs = await fetchNextSongs(currentSong.youtubeId, currentSong.title, currentSong.artist);
       // Add current song at the beginning
       const fullQueue = [currentSong, ...nextSongs];
       setQueue(fullQueue);
@@ -684,7 +688,7 @@ function App() {
 
     console.log(`📜 Extending queue based on: "${lastSong.title}"`);
     try {
-      const moreSongs = await fetchNextSongs(lastSong.youtubeId);
+      const moreSongs = await fetchNextSongs(lastSong.youtubeId, lastSong.title, lastSong.artist);
 
       if (moreSongs.length > 0) {
         // Filter out songs already in queue to avoid duplicates

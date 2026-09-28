@@ -1293,7 +1293,7 @@ function Player({ currentView, currentSong, activePlaylistName, isPlaying, onTog
             {/* Queue Songs */}
             {queue.length > 0 ? (
               queue.map((song, index) => {
-                const isCurrentSong = currentSong && song.id === currentSong.id;
+                const isCurrentSong = currentSong && (song.id === currentSong.id || (song.youtubeId && song.youtubeId === currentSong.youtubeId));
                 const isDragging = draggedIndex === index;
                 const isDragOver = dragOverIndex === index;
 
