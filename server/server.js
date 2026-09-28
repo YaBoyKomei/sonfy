@@ -664,95 +664,59 @@ app.get('/api/next/:videoId', async (req, res) => {
   }
 
   try {
-    const fetch = (await import('node-fetch')).default;
+    const fetchFn = globalThis.fetch || (await import('node-fetch')).default;
     const url = 'https://music.youtube.com/youtubei/v1/next?prettyPrint=false';
+    const headers = {
+      'Content-Type': 'application/json',
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36',
+      'Origin': 'https://music.youtube.com',
+      'Referer': 'https://music.youtube.com/'
+    };
 
-    // Step 1: Get radio playlist ID
-    console.log(`🎵 Step 1: Fetching radio playlist for videoId: ${videoId}`);
-    const firstPayload = {
-      enablePersistentPlaylistPanel: true,
-      videoId: videoId,
-      isAudioOnly: true,
-      context: {
-        client: {
-          clientName: 'WEB_REMIX',
-          clientVersion: '1.20251015.03.00',
-          hl: 'en',
-          gl: 'US',
-        }
+    const clientContext = {
+      client: {
+        clientName: 'WEB_REMIX',
+        clientVersion: '1.20251215.03.00',
+        hl: 'en',
+        gl: 'US',
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36'
       }
     };
 
-    const firstResponse = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-      },
-      body: JSON.stringify(firstPayload)
-    });
+    const radioPlaylistId = `RDAMVM${videoId}`;
+    console.log(`🎵 Fetching queue with playlistId: ${radioPlaylistId} for videoId: ${videoId}`);
 
-    if (!firstResponse.ok) {
-      throw new Error(`Next API error: ${firstResponse.status}`);
-    }
-
-    const firstData = await firstResponse.json();
-
-    // Extract radio playlist ID from "Start radio" menu item
-    let radioPlaylistId = null;
-    try {
-      const contents = firstData?.contents?.singleColumnMusicWatchNextResultsRenderer?.tabbedRenderer?.watchNextTabbedResultsRenderer?.tabs?.[0]?.tabRenderer?.content?.musicQueueRenderer?.content?.playlistPanelRenderer?.contents || [];
-
-      for (const item of contents) {
-        const menuItems = item?.playlistPanelVideoRenderer?.menu?.menuRenderer?.items || [];
-        for (const menuItem of menuItems) {
-          const navEndpoint = menuItem?.menuNavigationItemRenderer?.navigationEndpoint?.watchEndpoint;
-          if (navEndpoint && navEndpoint.playlistId && navEndpoint.playlistId.startsWith('RDAMVM')) {
-            radioPlaylistId = navEndpoint.playlistId;
-            console.log(`📻 Found radio playlist: ${radioPlaylistId}`);
-            break;
-          }
-        }
-        if (radioPlaylistId) break;
-      }
-    } catch (err) {
-      console.error('Error extracting radio playlist:', err);
-    }
-
-    // If no radio playlist found, return empty queue
-    if (!radioPlaylistId) {
-      console.log('⚠️ No radio playlist found');
-      return res.json([]);
-    }
-
-    // Step 2: Get queue with radio playlist ID
-    console.log(`🎵 Step 2: Fetching queue with playlistId: ${radioPlaylistId}`);
-    const secondPayload = {
+    const payload = {
       enablePersistentPlaylistPanel: true,
       videoId: videoId,
       playlistId: radioPlaylistId,
       isAudioOnly: true,
-      context: {
-        client: {
-          clientName: 'WEB_REMIX',
-          clientVersion: '1.20251015.03.00',
-          hl: 'en',
-          gl: 'US',
-        }
-      }
+      context: clientContext
     };
 
-    const response = await fetch(url, {
+    let response = await fetchFn(url, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-      },
-      body: JSON.stringify(secondPayload)
+      headers: headers,
+      body: JSON.stringify(payload)
     });
 
     if (!response.ok) {
-      throw new Error(`Next API error: ${response.status}`);
+      console.warn(`Direct radio request returned ${response.status}, retrying without playlistId`);
+      response = await fetchFn(url, {
+        method: 'POST',
+        headers: headers,
+        body: JSON.stringify({
+          enablePersistentPlaylistPanel: true,
+          videoId: videoId,
+          isAudioOnly: true,
+          context: clientContext
+        })
+      });
+    }
+
+    if (!response.ok) {
+      console.warn(`Next API error: ${response.status}`);
+      return res.json([]);
     }
 
     const data = await response.json();
@@ -764,7 +728,6 @@ app.get('/api/next/:videoId', async (req, res) => {
       let playlistId = panelRenderer?.playlistId;
 
       console.log(`🔍 Processing ${contents.length} items from queue for videoId: ${videoId}`);
-      console.log(`📋 PlaylistId: ${playlistId || 'none'}`);
 
       for (const item of contents) {
         const renderer = item.playlistPanelVideoRenderer;
@@ -773,50 +736,31 @@ app.get('/api/next/:videoId', async (req, res) => {
         if (!renderer && item.automixPreviewVideoRenderer) {
           const automixPlaylistId = item.automixPreviewVideoRenderer?.content?.automixPlaylistVideoRenderer?.navigationEndpoint?.watchPlaylistEndpoint?.playlistId;
           if (automixPlaylistId) {
-            console.log(`  🎵 Found automix playlist: ${automixPlaylistId}`);
             playlistId = automixPlaylistId;
           }
           continue;
         }
 
-        if (!renderer) {
-          console.log('  ⚠️ No playlistPanelVideoRenderer found');
-          continue;
-        }
+        if (!renderer) continue;
 
         const itemVideoId = renderer.videoId;
         const title = renderer.title?.runs?.[0]?.text || '';
         const artist = renderer.longBylineText?.runs?.[0]?.text || 'Unknown Artist';
         const thumbnail = renderer.thumbnail?.thumbnails?.slice(-1)[0]?.url || '';
 
-        console.log(`  📝 Item: "${title}" by ${artist}`);
-        console.log(`     - videoId: ${itemVideoId}`);
-        console.log(`     - selected: ${renderer.selected}`);
-
         // Skip the currently playing song (marked as selected)
-        if (renderer.selected) {
-          console.log(`     ⏭️ SKIPPED: Current song`);
+        if (renderer.selected || itemVideoId === videoId) {
           continue;
         }
 
         // Filter out non-music items
         const musicVideoType = renderer.navigationEndpoint?.watchEndpoint?.watchEndpointMusicSupportedConfigs?.watchEndpointMusicConfig?.musicVideoType;
         const itemPlaylistId = renderer.navigationEndpoint?.watchEndpoint?.playlistId;
-
-        console.log(`     - musicVideoType: ${musicVideoType || 'none'}`);
-        console.log(`     - playlistId: ${itemPlaylistId || 'none'}`);
-        console.log(`     - title length: ${title.length}`);
-
-        // Check if it's a music item
         const isMusic = musicVideoType || itemPlaylistId || title.length < 100;
 
-        if (!isMusic) {
-          console.log(`     🚫 FILTERED OUT: Not music (no musicVideoType, no playlistId, title too long)`);
-          continue;
-        }
+        if (!isMusic) continue;
 
         if (itemVideoId && title) {
-          console.log(`     ✅ ADDED to queue`);
           queue.push({
             id: itemVideoId,
             youtubeId: itemVideoId,
@@ -824,8 +768,6 @@ app.get('/api/next/:videoId', async (req, res) => {
             artist,
             cover: thumbnail
           });
-        } else {
-          console.log(`     ⚠️ SKIPPED: Missing videoId or title`);
         }
       }
 
@@ -834,34 +776,23 @@ app.get('/api/next/:videoId', async (req, res) => {
         console.log(`📋 Queue empty, fetching songs from playlist: ${playlistId}`);
         try {
           const playlistPayload = {
-            context: {
-              client: {
-                clientName: 'WEB_REMIX',
-                clientVersion: '1.20251015.03.00',
-                hl: 'en',
-                gl: 'US',
-              }
-            },
+            context: clientContext,
             browseId: `VL${playlistId}`
           };
 
-          const playlistResponse = await fetch('https://music.youtube.com/youtubei/v1/browse?prettyPrint=false', {
+          const playlistResponse = await fetchFn('https://music.youtube.com/youtubei/v1/browse?prettyPrint=false', {
             method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            },
+            headers: headers,
             body: JSON.stringify(playlistPayload)
           });
 
           if (playlistResponse.ok) {
             const playlistData = await playlistResponse.json();
             const playlistSongs = parseBrowseSongs(playlistData);
-            console.log(`✅ Fetched ${playlistSongs.length} songs from playlist`);
 
             // Filter out the current song
             const filteredSongs = playlistSongs.filter(s => s.id !== videoId);
-            queue.push(...filteredSongs.slice(0, 20)); // Limit to 20 songs
+            queue.push(...filteredSongs.slice(0, 20));
           }
         } catch (playlistError) {
           console.error('Error fetching playlist:', playlistError);
@@ -876,7 +807,7 @@ app.get('/api/next/:videoId', async (req, res) => {
     }
   } catch (error) {
     console.error('Error fetching next songs:', error);
-    res.status(500).json({ error: 'Failed to fetch next songs' });
+    res.json([]);
   }
 });
 

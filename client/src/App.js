@@ -13,10 +13,19 @@ import { updateSEOForView, addSongStructuredData, preloadCriticalResources } fro
 
 // API Helper Functions (using server)
 const fetchNextSongs = async (videoId) => {
-  console.log(`⏭️ Fetching next songs for: ${videoId}`);
-  const response = await fetch(getApiUrl(`/api/next/${videoId}`));
-  if (!response.ok) throw new Error(`Next API error: ${response.status}`);
-  return response.json();
+  try {
+    console.log(`⏭️ Fetching next songs for: ${videoId}`);
+    const response = await fetch(getApiUrl(`/api/next/${videoId}`));
+    if (!response.ok) {
+      console.warn(`Next API error: ${response.status}`);
+      return [];
+    }
+    const data = await response.json();
+    return Array.isArray(data) ? data : [];
+  } catch (error) {
+    console.error('❌ Error fetching next songs:', error);
+    return [];
+  }
 };
 
 const fetchSection = async (browseId) => {
@@ -411,23 +420,43 @@ function App() {
       }));
     }
 
+    if (fetchNewQueue) {
+      setQueue([song]);
+      setQueueIndex(0);
+    }
+
     // Fetch next songs in queue only if requested
     if (fetchNewQueue && song.youtubeId) {
       try {
         console.log(`📡 Fetching queue for video ID: ${song.youtubeId}`);
-        const response = await fetch(getApiUrl(`/api/next/${song.youtubeId}`));
-        const nextSongs = await response.json();
-        // Add current song at the beginning of the queue
-        const fullQueue = [song, ...nextSongs];
-        setQueue(fullQueue);
-        setQueueIndex(0); // Current song is at index 0
-        console.log(`📋 Queue loaded: ${fullQueue.length} songs (including current)`);
+        const nextSongs = await fetchNextSongs(song.youtubeId);
+        
+        setQueue(prevQueue => {
+          // If the queue has been replaced by another song play, ignore this response
+          const currentId = prevQueue[0]?.youtubeId || prevQueue[0]?.id;
+          const targetId = song.youtubeId || song.id;
+          if (currentId && targetId && currentId !== targetId) {
+            return prevQueue;
+          }
+          
+          if (!Array.isArray(nextSongs) || nextSongs.length === 0) {
+            return prevQueue.length > 0 ? prevQueue : [song];
+          }
+          
+          // Append new songs to whatever is currently in the queue
+          // This preserves any songs the user added manually while fetching
+          const existingIds = new Set(prevQueue.map(s => s.youtubeId || s.id));
+          const uniqueNextSongs = nextSongs.filter(s => !existingIds.has(s.youtubeId || s.id));
+          
+          return [...prevQueue, ...uniqueNextSongs];
+        });
+        
+        console.log(`📋 Queue loaded: ${nextSongs.length} additional songs`);
       } catch (error) {
         console.error('❌ Error loading queue:', error);
-        setQueue([song]); // At least keep the current song
       }
     } else if (!fetchNewQueue) {
-      console.log('🔒 Keeping current queue');
+      console.log('🔒 Keeping current queue (or managed by playlist/album)');
     }
   };
 
@@ -698,11 +727,36 @@ function App() {
     }
     
     // Insert right after current song (queueIndex)
-    const insertIndex = queueIndex + 1;
+    const insertIndex = queueIndex >= 0 ? queueIndex + 1 : 0;
     newQueue.splice(insertIndex, 0, song);
     
     setQueue(newQueue);
+    if (queueIndex === -1 && currentSong === null) {
+      playSong(song);
+    }
     console.log(`⏭️ Added "${song.title}" to play next (position ${insertIndex + 1})`);
+  };
+
+  // Add song to end of queue
+  const handleAddToQueue = (song) => {
+    // Check if song is already in queue
+    const existingIndex = queue.findIndex(s => s.id === song.id);
+    
+    const newQueue = [...queue];
+    
+    // Remove if already exists
+    if (existingIndex !== -1) {
+      newQueue.splice(existingIndex, 1);
+    }
+    
+    // Insert at end
+    newQueue.push(song);
+    
+    setQueue(newQueue);
+    if (queue.length === 0 && currentSong === null) {
+      playSong(song);
+    }
+    console.log(`⏭️ Added "${song.title}" to end of queue (position ${newQueue.length})`);
   };
 
   const toggleLike = (song) => {
@@ -1043,6 +1097,7 @@ function App() {
                         setShowAddToPlaylist(true);
                       }}
                       onPlayNext={handlePlayNext}
+                      onAddToQueue={handleAddToQueue}
                     />
                   ))}
                 </div>
@@ -1170,6 +1225,7 @@ function App() {
                         setShowAddToPlaylist(true);
                       }}
                       onPlayNext={handlePlayNext}
+                      onAddToQueue={handleAddToQueue}
                     />
                   </div>
                 ))}
@@ -1227,6 +1283,7 @@ function App() {
                         setShowAddToPlaylist(true);
                       }}
                       onPlayNext={handlePlayNext}
+                      onAddToQueue={handleAddToQueue}
                     />
                   ))}
                 </div>
@@ -1309,6 +1366,7 @@ function App() {
                     setShowAddToPlaylist(true);
                   }}
                   onPlayNext={handlePlayNext}
+                  onAddToQueue={handleAddToQueue}
                 />
               ))}
             </div>
@@ -1365,6 +1423,7 @@ function App() {
                     setShowAddToPlaylist(true);
                   }}
                   onPlayNext={handlePlayNext}
+                  onAddToQueue={handleAddToQueue}
                 />
               ))}
             </div>
@@ -1496,6 +1555,7 @@ function App() {
                     setShowAddToPlaylist(true);
                   }}
                   onPlayNext={handlePlayNext}
+                  onAddToQueue={handleAddToQueue}
                 />
               ))}
             </div>
@@ -1535,6 +1595,7 @@ function App() {
                     setShowAddToPlaylist(true);
                   }}
                   onPlayNext={handlePlayNext}
+                  onAddToQueue={handleAddToQueue}
                 />
               ))}
             </div>
@@ -1724,6 +1785,7 @@ function App() {
                             setShowAddToPlaylist(true);
                           }}
                           onPlayNext={handlePlayNext}
+                          onAddToQueue={handleAddToQueue}
                         />
                       ))}
                     </div>
