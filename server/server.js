@@ -727,7 +727,7 @@ app.get('/api/next/:videoId', async (req, res) => {
     const radioPlaylistId = `RDAMVM${videoId}`;
     console.log(`🎵 Fetching queue with playlistId: ${radioPlaylistId} for videoId: ${videoId}`);
 
-    // Strategy 1: YouTube WEB client on www.youtube.com (works reliably across cloud IPs)
+    // Strategy 1: YouTube WEB client on www.youtube.com
     let response = await fetchFn('https://www.youtube.com/youtubei/v1/next?prettyPrint=false', {
       method: 'POST',
       headers: {
@@ -749,12 +749,17 @@ app.get('/api/next/:videoId', async (req, res) => {
         }
       })
     });
-    console.log(`📡 [Next API] WEB client (youtube.com) status: ${response.status} for ${videoId}`);
-    let responseText = await response.text();
-    console.log(`📦 [Next API] WEB client body snippet (${responseText.length} bytes): ${responseText.slice(0, 300)}`);
+    
+    let responseText = '';
+    if (response.status === 403) {
+      console.warn(`📡 [Next API] Google returned 403 (cloud datacenter IP blocked) for ${videoId}.`);
+    } else {
+      console.log(`📡 [Next API] WEB client status: ${response.status} for ${videoId}`);
+      responseText = await response.text();
+    }
 
-    // Strategy 2: If WEB client failed, try WEB_REMIX with session
-    if (!response.ok) {
+    // Strategy 2: If not 403 and not ok, try WEB_REMIX
+    if (!response.ok && response.status !== 403) {
       console.warn(`WEB client returned ${response.status}, retrying with WEB_REMIX on music.youtube.com...`);
       const payload = {
         enablePersistentPlaylistPanel: true,
@@ -794,41 +799,9 @@ app.get('/api/next/:videoId', async (req, res) => {
         body: gzippedBody
       });
       console.log(`📡 [Next API] WEB_REMIX status: ${response.status}`);
-      responseText = await response.text();
-      console.log(`📦 [Next API] WEB_REMIX body snippet (${responseText.length} bytes): ${responseText.slice(0, 300)}`);
-    }
-
-    // Strategy 3: Try ANDROID_MUSIC if still not ok
-    if (!response.ok) {
-      console.warn(`WEB_REMIX returned ${response.status}, retrying with ANDROID_MUSIC client...`);
-      const androidPayload = {
-        enablePersistentPlaylistPanel: true,
-        videoId: videoId,
-        playlistId: radioPlaylistId,
-        isAudioOnly: true,
-        context: {
-          client: {
-            clientName: 'ANDROID_MUSIC',
-            clientVersion: '7.02.52',
-            hl: 'en',
-            gl: 'US'
-          }
-        }
-      };
-
-      response = await fetchFn('https://www.youtube.com/youtubei/v1/next?prettyPrint=false', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'User-Agent': 'com.google.android.apps.youtube.music/7.02.52 (Linux; U; Android 14; en_US)',
-          'X-Youtube-Client-Name': '21',
-          'X-Youtube-Client-Version': '7.02.52'
-        },
-        body: JSON.stringify(androidPayload)
-      });
-      console.log(`📡 [Next API] ANDROID_MUSIC status: ${response.status}`);
-      responseText = await response.text();
-      console.log(`📦 [Next API] ANDROID_MUSIC body snippet (${responseText.length} bytes): ${responseText.slice(0, 300)}`);
+      if (response.ok) {
+        responseText = await response.text();
+      }
     }
 
     const queue = [];
@@ -948,15 +921,36 @@ app.get('/api/next/:videoId', async (req, res) => {
       }
     }
 
-    // 🛑 SEARCH SCRAPER FALLBACK IS DISABLED PER USER REQUEST
-    const ENABLE_SEARCH_FALLBACK = false;
-    if (ENABLE_SEARCH_FALLBACK && queue.length === 0) {
-      console.log(`⚠️ Radio queue empty for ${videoId}, initiating smart search fallback...`);
-      // Fallback code omitted while disabled
-    }
-
     if (queue.length === 0) {
-      console.warn(`⚠️ [Next API] Genuine queue returned 0 songs for ${videoId}. Search scraper fallback is DISABLED.`);
+      let searchArtist = (req.query.artist || '').replace(/\s*-\s*Topic$/i, '').trim();
+      if (!searchArtist) {
+        try {
+          const noembedRes = await fetchFn(`https://noembed.com/embed?url=https://www.youtube.com/watch?v=${videoId}`);
+          if (noembedRes.ok) {
+            const noembedData = await noembedRes.json();
+            searchArtist = (noembedData.author_name || '').replace(/\s*-\s*Topic$/i, '').trim();
+          }
+        } catch (e) {}
+      }
+
+      if (searchArtist && searchArtist !== 'Unknown Artist') {
+        try {
+          console.log(`🔍 [Next API Fallback] Fetching related songs by artist "${searchArtist}"`);
+          const searchResults = await searchYouTubeMusic(searchArtist, 25);
+          if (searchResults && searchResults.songs && searchResults.songs.length > 0) {
+            const relatedSongs = searchResults.songs.filter(s => (s.youtubeId || s.id) !== videoId);
+            if (relatedSongs.length > 0) {
+              console.log(`✅ Returning ${relatedSongs.length} related songs from artist search for ${videoId}`);
+              res.set('X-Queue-Source', 'artist-search-fallback');
+              return res.json(relatedSongs);
+            }
+          }
+        } catch (err) {
+          console.warn('Artist search fallback error:', err);
+        }
+      }
+
+      console.warn(`⚠️ [Next API] No radio queue or fallback songs found for ${videoId}.`);
     }
 
     console.log(`✅ Returning ${queue.length} music songs from Next API in queue for ${videoId}`);
