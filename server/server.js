@@ -345,9 +345,10 @@ function parseSearchItem(item, isAlbumSection = false) {
     const flexColumns = item.flexColumns || [];
     const title = flexColumns[0]?.musicResponsiveListItemFlexColumnRenderer?.text?.runs?.[0]?.text || '';
     const secondColumn = flexColumns[1]?.musicResponsiveListItemFlexColumnRenderer?.text?.runs || [];
+    const IGNORED_RUNS = new Set(['•', '·', 'album', 'song', 'video', 'ep', 'single', '']);
     const artistRun = secondColumn.find(r => r.navigationEndpoint?.browseEndpoint?.browseId?.startsWith('UC')) ||
       secondColumn.find(r => r.navigationEndpoint) ||
-      secondColumn.find(r => r.text && ![' • ', ' · ', 'Album', 'Song', 'Video', 'EP', 'Single'].includes(r.text.trim()) && !/^\d+:\d+$/.test(r.text.trim()));
+      secondColumn.find(r => r.text && !IGNORED_RUNS.has(r.text.trim().toLowerCase()) && !/^\d+:\d+$/.test(r.text.trim()));
     const artist = artistRun?.text || 'Unknown Artist';
 
     const thumbnail = item.thumbnail?.musicThumbnailRenderer?.thumbnail?.thumbnails?.slice(-1)[0]?.url || '';
