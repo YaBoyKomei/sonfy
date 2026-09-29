@@ -3,6 +3,7 @@ const cors = require('cors');
 const path = require('path');
 const compression = require('compression');
 const fs = require('fs');
+const zlib = require('zlib');
 const app = express();
 const PORT = process.env.PORT || 5000;
 
@@ -344,7 +345,9 @@ function parseSearchItem(item, isAlbumSection = false) {
     const flexColumns = item.flexColumns || [];
     const title = flexColumns[0]?.musicResponsiveListItemFlexColumnRenderer?.text?.runs?.[0]?.text || '';
     const secondColumn = flexColumns[1]?.musicResponsiveListItemFlexColumnRenderer?.text?.runs || [];
-    const artistRun = secondColumn.find(r => r.navigationEndpoint) || secondColumn.find(r => r.text && ![' • ', ' · ', 'Album', 'Song', 'Video', 'EP', 'Single'].includes(r.text));
+    const artistRun = secondColumn.find(r => r.navigationEndpoint?.browseEndpoint?.browseId?.startsWith('UC')) ||
+      secondColumn.find(r => r.navigationEndpoint) ||
+      secondColumn.find(r => r.text && ![' • ', ' · ', 'Album', 'Song', 'Video', 'EP', 'Single'].includes(r.text.trim()) && !/^\d+:\d+$/.test(r.text.trim()));
     const artist = artistRun?.text || 'Unknown Artist';
 
     const thumbnail = item.thumbnail?.musicThumbnailRenderer?.thumbnail?.thumbnails?.slice(-1)[0]?.url || '';
@@ -655,6 +658,59 @@ app.get('/api/section/:browseId', async (req, res) => {
   }
 });
 
+// Cache YouTube Music visitor session and cookies
+let ytSession = null;
+let ytSessionExpiry = 0;
+
+async function getYoutubeMusicSession() {
+  const now = Date.now();
+  if (ytSession && now < ytSessionExpiry) {
+    return ytSession;
+  }
+
+  try {
+    const fetchFn = globalThis.fetch || (await import('node-fetch')).default;
+    const res = await fetchFn('https://music.youtube.com/', {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64; rv:156.0) Gecko/20100101 Firefox/156.0',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9'
+      }
+    });
+
+    const html = await res.text();
+    const cookies = res.headers.get('set-cookie') || '';
+    const m = html.match(/ytcfg\.set\s*\(\s*({.+?})\s*\);/s);
+
+    let clientVersion = '1.20260927.17.00';
+    let visitorData = '';
+
+    if (m) {
+      try {
+        const cfg = JSON.parse(m[1]);
+        clientVersion = cfg.INNERTUBE_CLIENT_VERSION || clientVersion;
+        visitorData = cfg.VISITOR_DATA || '';
+      } catch (e) {}
+    }
+
+    ytSession = {
+      clientVersion,
+      visitorData,
+      cookies
+    };
+    ytSessionExpiry = now + 6 * 60 * 60 * 1000; // cache for 6 hours
+    console.log(`🔑 YouTube Music session initialized (version: ${clientVersion}, visitor: ${visitorData ? 'yes' : 'no'})`);
+    return ytSession;
+  } catch (err) {
+    console.error('Error getting YouTube Music session:', err);
+    return {
+      clientVersion: '1.20260927.17.00',
+      visitorData: '',
+      cookies: ''
+    };
+  }
+}
+
 // Get next songs in queue for a video
 app.get('/api/next/:videoId', async (req, res) => {
   const { videoId } = req.params;
@@ -666,27 +722,7 @@ app.get('/api/next/:videoId', async (req, res) => {
   try {
     const fetchFn = globalThis.fetch || (await import('node-fetch')).default;
     const url = 'https://music.youtube.com/youtubei/v1/next?prettyPrint=false';
-    const headers = {
-      'Content-Type': 'application/json',
-      'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64; rv:156.0) Gecko/20100101 Firefox/156.0',
-      'Origin': 'https://music.youtube.com',
-      'Referer': 'https://music.youtube.com/',
-      'X-Youtube-Client-Name': '67',
-      'X-Youtube-Client-Version': '1.20260927.17.00',
-      'Accept': '*/*',
-      'Accept-Language': 'en-US,en;q=0.9'
-    };
-
-    const clientContext = {
-      client: {
-        clientName: 'WEB_REMIX',
-        clientVersion: '1.20260927.17.00',
-        hl: 'en',
-        gl: 'US',
-        userAgent: 'Mozilla/5.0 (X11; Linux x86_64; rv:156.0) Gecko/20100101 Firefox/156.0'
-      }
-    };
-
+    const session = await getYoutubeMusicSession();
     const radioPlaylistId = `RDAMVM${videoId}`;
     console.log(`🎵 Fetching queue with playlistId: ${radioPlaylistId} for videoId: ${videoId}`);
 
@@ -695,25 +731,59 @@ app.get('/api/next/:videoId', async (req, res) => {
       videoId: videoId,
       playlistId: radioPlaylistId,
       isAudioOnly: true,
-      context: clientContext
+      context: {
+        client: {
+          clientName: 'WEB_REMIX',
+          clientVersion: session.clientVersion,
+          hl: 'en',
+          gl: 'US',
+          visitorData: session.visitorData || undefined,
+          userAgent: 'Mozilla/5.0 (X11; Linux x86_64; rv:156.0) Gecko/20100101 Firefox/156.0'
+        }
+      }
     };
+
+    // Compress JSON body with GZIP matching official YouTube Music browser client
+    const gzippedBody = zlib.gzipSync(JSON.stringify(payload));
+
+    const reqHeaders = {
+      'Content-Type': 'application/json',
+      'Content-Encoding': 'gzip',
+      'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64; rv:156.0) Gecko/20100101 Firefox/156.0',
+      'Origin': 'https://music.youtube.com',
+      'Referer': `https://music.youtube.com/watch?v=${videoId}&list=${radioPlaylistId}`,
+      'X-Youtube-Client-Name': '67',
+      'X-Youtube-Client-Version': session.clientVersion,
+      'Accept': '*/*',
+      'Accept-Language': 'en-US,en;q=0.9'
+    };
+
+    if (session.visitorData) {
+      reqHeaders['X-Goog-Visitor-Id'] = session.visitorData;
+    }
+    if (session.cookies) {
+      reqHeaders['Cookie'] = session.cookies;
+    }
 
     let response = await fetchFn(url, {
       method: 'POST',
-      headers: headers,
-      body: JSON.stringify(payload)
+      headers: reqHeaders,
+      body: gzippedBody
     });
 
+    // If initial request failed, retry with uncompressed payload without playlistId
     if (!response.ok) {
-      console.warn(`Direct radio request returned ${response.status}, retrying without playlistId`);
+      console.warn(`Direct radio request returned ${response.status}, retrying with plain payload...`);
+      const uncompressedHeaders = { ...reqHeaders };
+      delete uncompressedHeaders['Content-Encoding'];
       response = await fetchFn(url, {
         method: 'POST',
-        headers: headers,
+        headers: uncompressedHeaders,
         body: JSON.stringify({
           enablePersistentPlaylistPanel: true,
           videoId: videoId,
           isAudioOnly: true,
-          context: clientContext
+          context: payload.context
         })
       });
     }
@@ -746,7 +816,14 @@ app.get('/api/next/:videoId', async (req, res) => {
 
           const itemVideoId = renderer.videoId;
           const title = renderer.title?.runs?.[0]?.text || '';
-          const artist = renderer.longBylineText?.runs?.[0]?.text || 'Unknown Artist';
+          
+          // Accurately extract artist name without duration or separators
+          const artistRuns = renderer.longBylineText?.runs || renderer.shortBylineText?.runs || [];
+          const artistRun = artistRuns.find(r => r.navigationEndpoint?.browseEndpoint?.browseId?.startsWith('UC')) ||
+            artistRuns.find(r => r.navigationEndpoint) ||
+            artistRuns.find(r => r.text && ![' • ', ' · ', ' •', '· '].includes(r.text.trim()) && !/^\d+:\d+$/.test(r.text.trim()));
+          const artist = artistRun?.text || 'Unknown Artist';
+
           const thumbnail = renderer.thumbnail?.thumbnails?.slice(-1)[0]?.url || '';
 
           // Skip the currently playing song (marked as selected)
@@ -777,13 +854,18 @@ app.get('/api/next/:videoId', async (req, res) => {
           console.log(`📋 Queue empty, fetching songs from playlist: ${playlistId}`);
           try {
             const playlistPayload = {
-              context: clientContext,
+              context: payload.context,
               browseId: `VL${playlistId}`
             };
 
             const playlistResponse = await fetchFn('https://music.youtube.com/youtubei/v1/browse?prettyPrint=false', {
               method: 'POST',
-              headers: headers,
+              headers: {
+                'Content-Type': 'application/json',
+                'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64; rv:156.0) Gecko/20100101 Firefox/156.0',
+                'Origin': 'https://music.youtube.com',
+                'Referer': 'https://music.youtube.com/'
+              },
               body: JSON.stringify(playlistPayload)
             });
 
@@ -813,7 +895,7 @@ app.get('/api/next/:videoId', async (req, res) => {
         const titleParam = req.query.title;
         const artistParam = req.query.artist;
 
-        if (artistParam && artistParam !== 'Unknown Artist') {
+        if (artistParam && artistParam !== 'Unknown Artist' && !/^\d+:\d+$/.test(artistParam)) {
           searchQuery = `${artistParam} songs`;
         } else if (titleParam) {
           searchQuery = titleParam;
