@@ -727,55 +727,76 @@ app.get('/api/next/:videoId', async (req, res) => {
     const radioPlaylistId = `RDAMVM${videoId}`;
     console.log(`🎵 Fetching queue with playlistId: ${radioPlaylistId} for videoId: ${videoId}`);
 
-    const payload = {
-      enablePersistentPlaylistPanel: true,
-      videoId: videoId,
-      playlistId: radioPlaylistId,
-      isAudioOnly: true,
-      context: {
-        client: {
-          clientName: 'WEB_REMIX',
-          clientVersion: session.clientVersion,
-          hl: 'en',
-          gl: 'US',
-          visitorData: session.visitorData || undefined,
-          userAgent: 'Mozilla/5.0 (X11; Linux x86_64; rv:156.0) Gecko/20100101 Firefox/156.0'
-        }
-      }
-    };
-
-    // Compress JSON body with GZIP matching official YouTube Music browser client
-    const gzippedBody = zlib.gzipSync(JSON.stringify(payload));
-
-    const reqHeaders = {
-      'Content-Type': 'application/json',
-      'Content-Encoding': 'gzip',
-      'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64; rv:156.0) Gecko/20100101 Firefox/156.0',
-      'Origin': 'https://music.youtube.com',
-      'Referer': `https://music.youtube.com/watch?v=${videoId}&list=${radioPlaylistId}`,
-      'X-Youtube-Client-Name': '67',
-      'X-Youtube-Client-Version': session.clientVersion,
-      'Accept': '*/*',
-      'Accept-Language': 'en-US,en;q=0.9'
-    };
-
-    if (session.visitorData) {
-      reqHeaders['X-Goog-Visitor-Id'] = session.visitorData;
-    }
-    if (session.cookies) {
-      reqHeaders['Cookie'] = session.cookies;
-    }
-
-    let response = await fetchFn(url, {
+    // Strategy 1: YouTube WEB client on www.youtube.com (works reliably across cloud IPs)
+    let response = await fetchFn('https://www.youtube.com/youtubei/v1/next?prettyPrint=false', {
       method: 'POST',
-      headers: reqHeaders,
-      body: gzippedBody
+      headers: {
+        'Content-Type': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36',
+        'X-Youtube-Client-Name': '1',
+        'X-Youtube-Client-Version': '2.20251015.01.00'
+      },
+      body: JSON.stringify({
+        videoId: videoId,
+        playlistId: radioPlaylistId,
+        context: {
+          client: {
+            clientName: 'WEB',
+            clientVersion: '2.20251015.01.00',
+            hl: 'en',
+            gl: 'US'
+          }
+        }
+      })
     });
-    console.log(`📡 [Next API] WEB_REMIX status: ${response.status} for ${videoId}`);
+    console.log(`📡 [Next API] WEB client (youtube.com) status: ${response.status} for ${videoId}`);
 
-    // If WEB_REMIX failed (e.g. 403 on cloud datacenter IP), try ANDROID_MUSIC client!
+    // Strategy 2: If WEB client failed, try WEB_REMIX with session
     if (!response.ok) {
-      console.warn(`WEB_REMIX radio request returned ${response.status}, retrying with ANDROID_MUSIC client on youtube.com...`);
+      console.warn(`WEB client returned ${response.status}, retrying with WEB_REMIX on music.youtube.com...`);
+      const payload = {
+        enablePersistentPlaylistPanel: true,
+        videoId: videoId,
+        playlistId: radioPlaylistId,
+        isAudioOnly: true,
+        context: {
+          client: {
+            clientName: 'WEB_REMIX',
+            clientVersion: session.clientVersion,
+            hl: 'en',
+            gl: 'US',
+            visitorData: session.visitorData || undefined,
+            userAgent: 'Mozilla/5.0 (X11; Linux x86_64; rv:156.0) Gecko/20100101 Firefox/156.0'
+          }
+        }
+      };
+
+      const gzippedBody = zlib.gzipSync(JSON.stringify(payload));
+      const reqHeaders = {
+        'Content-Type': 'application/json',
+        'Content-Encoding': 'gzip',
+        'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64; rv:156.0) Gecko/20100101 Firefox/156.0',
+        'Origin': 'https://music.youtube.com',
+        'Referer': `https://music.youtube.com/watch?v=${videoId}&list=${radioPlaylistId}`,
+        'X-Youtube-Client-Name': '67',
+        'X-Youtube-Client-Version': session.clientVersion,
+        'Accept': '*/*',
+        'Accept-Language': 'en-US,en;q=0.9'
+      };
+      if (session.visitorData) reqHeaders['X-Goog-Visitor-Id'] = session.visitorData;
+      if (session.cookies) reqHeaders['Cookie'] = session.cookies;
+
+      response = await fetchFn('https://music.youtube.com/youtubei/v1/next?prettyPrint=false', {
+        method: 'POST',
+        headers: reqHeaders,
+        body: gzippedBody
+      });
+      console.log(`📡 [Next API] WEB_REMIX status: ${response.status}`);
+    }
+
+    // Strategy 3: Try ANDROID_MUSIC if still not ok
+    if (!response.ok) {
+      console.warn(`WEB_REMIX returned ${response.status}, retrying with ANDROID_MUSIC client...`);
       const androidPayload = {
         enablePersistentPlaylistPanel: true,
         videoId: videoId,
@@ -791,7 +812,6 @@ app.get('/api/next/:videoId', async (req, res) => {
         }
       };
 
-      // Try www.youtube.com first (often bypasses datacenter blocks)
       response = await fetchFn('https://www.youtube.com/youtubei/v1/next?prettyPrint=false', {
         method: 'POST',
         headers: {
@@ -802,22 +822,7 @@ app.get('/api/next/:videoId', async (req, res) => {
         },
         body: JSON.stringify(androidPayload)
       });
-      console.log(`📡 [Next API] ANDROID_MUSIC (youtube.com) status: ${response.status}`);
-
-      if (!response.ok) {
-        console.warn(`ANDROID_MUSIC on youtube.com returned ${response.status}, retrying on music.youtube.com...`);
-        response = await fetchFn(url, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'User-Agent': 'com.google.android.apps.youtube.music/7.02.52 (Linux; U; Android 14; en_US)',
-            'X-Youtube-Client-Name': '21',
-            'X-Youtube-Client-Version': '7.02.52'
-          },
-          body: JSON.stringify(androidPayload)
-        });
-        console.log(`📡 [Next API] ANDROID_MUSIC (music.youtube.com) status: ${response.status}`);
-      }
+      console.log(`📡 [Next API] ANDROID_MUSIC status: ${response.status}`);
     }
 
     const queue = [];
@@ -837,7 +842,9 @@ app.get('/api/next/:videoId', async (req, res) => {
           return null;
         };
 
-        const panelRenderer = data?.contents?.singleColumnMusicWatchNextResultsRenderer?.tabbedRenderer?.watchNextTabbedResultsRenderer?.tabs?.[0]?.tabRenderer?.content?.musicQueueRenderer?.content?.playlistPanelRenderer || findPanelRenderer(data);
+        const panelRenderer = data?.contents?.twoColumnWatchNextResults?.playlist?.playlist ||
+          data?.contents?.singleColumnMusicWatchNextResultsRenderer?.tabbedRenderer?.watchNextTabbedResultsRenderer?.tabs?.[0]?.tabRenderer?.content?.musicQueueRenderer?.content?.playlistPanelRenderer ||
+          findPanelRenderer(data);
         const contents = panelRenderer?.contents || [];
         let playlistId = panelRenderer?.playlistId;
 
@@ -858,14 +865,15 @@ app.get('/api/next/:videoId', async (req, res) => {
           if (!renderer) continue;
 
           const itemVideoId = renderer.videoId;
-          const title = renderer.title?.runs?.[0]?.text || '';
+          const title = renderer.title?.simpleText || renderer.title?.runs?.[0]?.text || '';
           
           // Accurately extract artist name without duration or separators
           const artistRuns = renderer.longBylineText?.runs || renderer.shortBylineText?.runs || [];
           const artistRun = artistRuns.find(r => r.navigationEndpoint?.browseEndpoint?.browseId?.startsWith('UC')) ||
             artistRuns.find(r => r.navigationEndpoint) ||
-            artistRuns.find(r => r.text && ![' • ', ' · ', ' •', '· '].includes(r.text.trim()) && !/^\d+:\d+$/.test(r.text.trim()));
-          const artist = artistRun?.text || 'Unknown Artist';
+            artistRuns.find(r => r.text && ![' • ', ' · ', ' •', '· '].includes(r.text.trim()) && !/^\d+:\d+$/.test(r.text.trim())) ||
+            artistRuns[0];
+          const artist = (artistRun?.text || 'Unknown Artist').replace(/\s*-\s*Topic$/i, '').trim();
 
           const thumbnail = renderer.thumbnail?.thumbnails?.slice(-1)[0]?.url || '';
 
@@ -873,13 +881,6 @@ app.get('/api/next/:videoId', async (req, res) => {
           if (renderer.selected || itemVideoId === videoId) {
             continue;
           }
-
-          // Filter out non-music items
-          const musicVideoType = renderer.navigationEndpoint?.watchEndpoint?.watchEndpointMusicSupportedConfigs?.watchEndpointMusicConfig?.musicVideoType;
-          const itemPlaylistId = renderer.navigationEndpoint?.watchEndpoint?.playlistId;
-          const isMusic = musicVideoType || itemPlaylistId || title.length < 100;
-
-          if (!isMusic) continue;
 
           if (itemVideoId && title) {
             queue.push({
@@ -897,7 +898,14 @@ app.get('/api/next/:videoId', async (req, res) => {
           console.log(`📋 Queue empty, fetching songs from playlist: ${playlistId}`);
           try {
             const playlistPayload = {
-              context: payload.context,
+              context: {
+                client: {
+                  clientName: 'WEB_REMIX',
+                  clientVersion: '1.20251015.03.00',
+                  hl: 'en',
+                  gl: 'US'
+                }
+              },
               browseId: `VL${playlistId}`
             };
 
