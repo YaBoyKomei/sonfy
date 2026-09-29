@@ -42,7 +42,7 @@ const parseLrc = (lrcText) => {
   return parsed.length > 0 ? parsed : null;
 };
 
-function Player({ currentView, currentSong, activePlaylistName, isPlaying, onTogglePlay, onNext, onPrevious, shuffle, onToggleShuffle, repeat, onToggleRepeat, autoplay, onToggleAutoplay, isLiked, onToggleLike, queue, showQueue, onToggleQueue, onPlayFromQueue, onRefreshQueue, onExtendQueue, likedSongs, onToggleLikeInQueue, onAddToPlaylistFromQueue, onReorderQueue, onRadioQueueLoaded }) {
+function Player({ currentView, currentSong, activePlaylistName, isPlaying, onTogglePlay, onNext, onPrevious, shuffle, onToggleShuffle, repeat, onToggleRepeat, autoplay, onToggleAutoplay, isLiked, onToggleLike, queue, showQueue, onToggleQueue, onPlayFromQueue, onRefreshQueue, onExtendQueue, likedSongs, onToggleLikeInQueue, onAddToPlaylistFromQueue, onReorderQueue }) {
   const [player, setPlayer] = useState(null);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -103,7 +103,6 @@ function Player({ currentView, currentSong, activePlaylistName, isPlaying, onTog
   const draggedElement = useRef(null);
   const wakeLockRef = useRef(null);
   const audioElementRef = useRef(null);
-  const onRadioQueueLoadedRef = useRef(onRadioQueueLoaded);
   const currentSongRef = useRef(currentSong);
   const queueRef = useRef(queue);
   const activePlaylistNameRef = useRef(activePlaylistName);
@@ -339,10 +338,6 @@ function Player({ currentView, currentSong, activePlaylistName, isPlaying, onTog
   }, [onPrevious]);
 
   useEffect(() => {
-    onRadioQueueLoadedRef.current = onRadioQueueLoaded;
-  }, [onRadioQueueLoaded]);
-
-  useEffect(() => {
     currentSongRef.current = currentSong;
   }, [currentSong]);
 
@@ -569,19 +564,6 @@ function Player({ currentView, currentSong, activePlaylistName, isPlaying, onTog
             onStateChange: (event) => {
               console.log('Player state changed:', event.data, 'Page hidden:', isPageHiddenRef.current, 'Loading:', isLoadingNewSongRef.current);
               // -1: unstarted, 0: ended, 1: playing, 2: paused, 3: buffering, 5: cued
-
-              // Check if player loaded a radio playlist
-              if (onRadioQueueLoadedRef.current && event.target && event.target.getPlaylist) {
-                try {
-                  const pl = event.target.getPlaylist();
-                  if (Array.isArray(pl) && pl.length > 1) {
-                    const seed = currentSongRef.current ? (currentSongRef.current.youtubeId || currentSongRef.current.id) : null;
-                    onRadioQueueLoadedRef.current(pl, seed);
-                  }
-                } catch (e) {
-                  // ignore
-                }
-              }
 
               // Skip sync only if loading a new song
               if (isLoadingNewSongRef.current) {
@@ -829,9 +811,10 @@ function Player({ currentView, currentSong, activePlaylistName, isPlaying, onTog
 
   // Load song when currentSong changes
   useEffect(() => {
-    if (!player || !currentSong || !currentSong.youtubeId) return;
+    const videoId = currentSong?.youtubeId || currentSong?.id;
+    if (!player || !currentSong || !videoId) return;
 
-    console.log('🎵 Loading song:', currentSong.title, currentSong.youtubeId, 'Should play:', isPlayingRef.current);
+    console.log('🎵 Loading song:', currentSong.title, videoId, 'Should play:', isPlayingRef.current);
 
     try {
       // Mark that we're loading a new song
@@ -854,41 +837,8 @@ function Player({ currentView, currentSong, activePlaylistName, isPlaying, onTog
         }
       }
 
-      // Check if we should load as radio mix playlist
-      const shouldLoadRadio = (!queueRef.current || queueRef.current.length <= 1) && !activePlaylistNameRef.current;
-      if (player.loadPlaylist && shouldLoadRadio) {
-        console.log(`📻 Loading YouTube radio mix for ${currentSong.youtubeId} (RDAMVM${currentSong.youtubeId})`);
-        if (isPlayingRef.current) {
-          player.loadPlaylist({
-            list: 'RDAMVM' + currentSong.youtubeId,
-            listType: 'playlist',
-            index: 0
-          });
-        } else {
-          player.cuePlaylist({
-            list: 'RDAMVM' + currentSong.youtubeId,
-            listType: 'playlist',
-            index: 0
-          });
-        }
-
-        // Poll playlist retrieval after load in case onStateChange doesn't immediately fire
-        [400, 1200, 2500].forEach(delay => {
-          setTimeout(() => {
-            try {
-              if (playerRef.current && playerRef.current.getPlaylist && onRadioQueueLoadedRef.current) {
-                const pl = playerRef.current.getPlaylist();
-                if (Array.isArray(pl) && pl.length > 1) {
-                  onRadioQueueLoadedRef.current(pl, currentSong.youtubeId);
-                }
-              }
-            } catch (err) {}
-          }, delay);
-        });
-      } else {
-        // Load the video with YouTube player
-        player.loadVideoById(currentSong.youtubeId);
-      }
+      // Always load the exact video with YouTube player
+      player.loadVideoById(videoId);
 
       // Set quality to highest available for best audio after video loads
       setTimeout(() => {

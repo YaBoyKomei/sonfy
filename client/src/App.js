@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import './App.css';
 import Sidebar from './components/Sidebar';
 import BottomNav from './components/BottomNav';
@@ -11,6 +11,17 @@ import { SearchIcon, HeartIcon, PlusIcon } from './components/Icons';
 import { ChevronLeftIcon, ChevronRightIcon } from './components/ScrollButton';
 import { updateSEOForView, addSongStructuredData, preloadCriticalResources } from './utils/seo';
 import { fetchRadioVideoIds, initRadioLoader } from './utils/radioLoader';
+
+// Match songs accurately across different ID formats (number vs YouTube ID string)
+const isSameSong = (s1, s2) => {
+  if (!s1 || !s2) return false;
+  if (s1 === s2) return true;
+  if (s1.youtubeId && s2.youtubeId && s1.youtubeId === s2.youtubeId) return true;
+  if (s1.id && s2.id && String(s1.id) === String(s2.id)) return true;
+  if (s1.youtubeId && s2.id && String(s1.youtubeId) === String(s2.id)) return true;
+  if (s1.id && s2.youtubeId && String(s1.id) === String(s2.youtubeId)) return true;
+  return false;
+};
 
 // Resolve video metadata client-side via CORS-friendly oEmbed
 const resolveVideosClient = async (videoIds) => {
@@ -498,10 +509,11 @@ function App() {
     }
 
     // Fetch next songs in queue only if requested
-    if (fetchNewQueue && song.youtubeId) {
+    const videoId = song.youtubeId || song.id;
+    if (fetchNewQueue && videoId) {
       try {
-        console.log(`📡 Fetching queue for video ID: ${song.youtubeId}`);
-        const nextSongs = await fetchNextSongs(song.youtubeId, song.title, song.artist);
+        console.log(`📡 Fetching queue for video ID: ${videoId}`);
+        const nextSongs = await fetchNextSongs(videoId, song.title, song.artist);
         
         setQueue(prevQueue => {
           // If the queue has been replaced by another song play, ignore this response
@@ -517,8 +529,8 @@ function App() {
           
           // Append new songs to whatever is currently in the queue
           // This preserves any songs the user added manually while fetching
-          const existingIds = new Set(prevQueue.map(s => s.youtubeId || s.id));
-          const uniqueNextSongs = nextSongs.filter(s => !existingIds.has(s.youtubeId || s.id));
+          const existingIds = new Set(prevQueue.flatMap(s => [s.id, s.youtubeId].filter(Boolean)));
+          const uniqueNextSongs = nextSongs.filter(s => !existingIds.has(s.youtubeId) && !existingIds.has(s.id));
           
           return [...prevQueue, ...uniqueNextSongs];
         });
@@ -539,36 +551,6 @@ function App() {
       return !prev;
     });
   };
-
-  const lastLoadedRadioSeedRef = useRef(null);
-
-  const handleRadioQueueLoaded = useCallback(async (videoIds, seedVideoId) => {
-    if (!videoIds || videoIds.length <= 1) return;
-    if (seedVideoId && lastLoadedRadioSeedRef.current === seedVideoId) return;
-
-    const nextVideoIds = videoIds.filter(id => id !== seedVideoId);
-    if (nextVideoIds.length === 0) return;
-
-    if (seedVideoId) {
-      lastLoadedRadioSeedRef.current = seedVideoId;
-    }
-    console.log(`📻 Client player loaded ${nextVideoIds.length} radio tracks. Resolving metadata...`);
-
-    const resolvedSongs = await resolveVideosClient(nextVideoIds.slice(0, 25));
-    if (resolvedSongs.length > 0) {
-      setQueue(prevQueue => {
-        const currentId = prevQueue[0]?.youtubeId || prevQueue[0]?.id;
-        if (currentId && seedVideoId && currentId !== seedVideoId && prevQueue.length > 1) {
-          return prevQueue;
-        }
-        const existingIds = new Set(prevQueue.map(s => s.youtubeId || s.id));
-        const newSongs = resolvedSongs.filter(s => !existingIds.has(s.youtubeId || s.id));
-        if (newSongs.length === 0) return prevQueue;
-        console.log(`✨ Added ${newSongs.length} genuine radio songs to queue via client player`);
-        return [...prevQueue, ...newSongs];
-      });
-    }
-  }, []);
 
   const playNext = async () => {
     console.log('🎵 playNext called');
@@ -593,8 +575,8 @@ function App() {
     }
 
     // Try to play from queue first
-    // Find current song index in queue
-    const currentSongIndex = queue.findIndex(s => s.id === currentSong.id);
+    // Find current song index in queue using robust song matching
+    const currentSongIndex = queue.findIndex(s => isSameSong(s, currentSong));
     const nextIndex = currentSongIndex + 1;
 
     console.log(`📍 Current song at index ${currentSongIndex}, next index: ${nextIndex}`);
@@ -686,7 +668,7 @@ function App() {
     } else {
       // Play next song from current list
       console.log('➡️ Sequential mode - playing next from list');
-      const currentIndex = songs.findIndex(s => s.id === currentSong.id);
+      const currentIndex = songs.findIndex(s => isSameSong(s, currentSong));
       const nextIndex = (currentIndex + 1) % songs.length;
       await playSong(songs[nextIndex]);
     }
@@ -751,7 +733,7 @@ function App() {
     // Play song but don't fetch new queue
     await playSong(song, true, false);
     // Find the song's position in current queue and update index
-    const songIndex = queue.findIndex(s => s.id === song.id);
+    const songIndex = queue.findIndex(s => isSameSong(s, song));
     if (songIndex !== -1) {
       setQueueIndex(songIndex + 1);
       console.log(`📍 Updated queue index to ${songIndex + 1}`);
@@ -819,7 +801,7 @@ function App() {
   // Add song to play next (right after current song)
   const handlePlayNext = (song) => {
     // Check if song is already in queue
-    const existingIndex = queue.findIndex(s => s.id === song.id);
+    const existingIndex = queue.findIndex(s => isSameSong(s, song));
     
     const newQueue = [...queue];
     
@@ -842,7 +824,7 @@ function App() {
   // Add song to end of queue
   const handleAddToQueue = (song) => {
     // Check if song is already in queue
-    const existingIndex = queue.findIndex(s => s.id === song.id);
+    const existingIndex = queue.findIndex(s => isSameSong(s, song));
     
     const newQueue = [...queue];
     
@@ -1973,7 +1955,6 @@ function App() {
             setSelectedSongForPlaylist(song);
             setShowAddToPlaylist(true);
           }}
-          onRadioQueueLoaded={handleRadioQueueLoaded}
         />
       )}
 
