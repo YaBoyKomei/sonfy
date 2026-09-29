@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import './Player.css';
-import { PlayIcon, PauseIcon, SkipBackIcon, SkipForwardIcon, VolumeIcon, HeartIcon, ShuffleIcon, RepeatIcon, RepeatOneIcon, AutoplayIcon, PlusIcon, RefreshIcon, ShareIcon, MoreVerticalIcon, ConnectIcon, XIcon } from './Icons';
+import { PlayIcon, PauseIcon, SkipBackIcon, SkipForwardIcon, HeartIcon, ShuffleIcon, RepeatIcon, RepeatOneIcon, PlusIcon, RefreshIcon, XIcon } from './Icons';
 import { getApiUrl } from '../config';
 
 // Collapse/Expand icons
@@ -54,16 +54,10 @@ function Player({ currentView, currentSong, activePlaylistName, isPlaying, onTog
   const [lyricsLoading, setLyricsLoading] = useState(false);
   const [lyricsSource, setLyricsSource] = useState('');
   const [expandedView, setExpandedView] = useState('playing'); // 'playing' or 'lyrics'
-  const [windowWidth, setWindowWidth] = useState(window.innerWidth);
-  const [currentQueueIndex, setCurrentQueueIndex] = useState(0);
   const titleRef = useRef(null);
   const intervalRef = useRef(null);
   const playerInitialized = useRef(false);
   const isPlayingRef = useRef(isPlaying);
-  
-  const progressRef = useRef(null);
-  const titleContainerRef = useRef(null);
-  const titleTextRef = useRef(null);
   
   const lyricsScrollerRef = useRef(null);
   const fullLyricsScrollerRef = useRef(null);
@@ -93,7 +87,6 @@ function Player({ currentView, currentSong, activePlaylistName, isPlaying, onTog
   const isLoadingNewSongRef = useRef(false); // Track if loading a new song
   const autoplayRef = useRef(autoplay);
   const repeatRef = useRef(repeat);
-  const playerContainerRef = useRef(null);
   const onNextRef = useRef(onNext);
   const onPreviousRef = useRef(onPrevious);
   const touchStartY = useRef(0);
@@ -103,7 +96,6 @@ function Player({ currentView, currentSong, activePlaylistName, isPlaying, onTog
   const [isLoadingMore, setIsLoadingMore] = useState(false);
 
   // Touch drag state
-  const [touchDragActive, setTouchDragActive] = useState(false);
   const touchStartYPos = useRef(0);
   const touchCurrentYPos = useRef(0);
   const longPressTimer = useRef(null);
@@ -111,8 +103,6 @@ function Player({ currentView, currentSong, activePlaylistName, isPlaying, onTog
   const draggedElement = useRef(null);
   const wakeLockRef = useRef(null);
   const audioElementRef = useRef(null);
-  const [useNativePlayer, setUseNativePlayer] = useState(false);
-  const nativePlayerReady = useRef(false);
 
   // Setup global SonfyControl object for native communication
   useEffect(() => {
@@ -248,21 +238,11 @@ function Player({ currentView, currentSong, activePlaylistName, isPlaying, onTog
         // Silently fail
       }
     }
-    
-    // Check if the current song is in the queue
-    if (currentSong && queue.length > 0) {
-      const index = queue.findIndex(s => s.id === currentSong.id);
-      if (index !== -1) {
-        setCurrentQueueIndex(index);
-      }
-    }
   }, [isPlaying, currentTime, currentSong, queue]);
 
   // Minimize player when changing views (pages)
   useEffect(() => {
-    if (isExpanded) {
-      setIsExpanded(false);
-    }
+    setIsExpanded(false);
   }, [currentView]);
 
   // Initialize audio element for background playback detection
@@ -441,7 +421,6 @@ function Player({ currentView, currentSong, activePlaylistName, isPlaying, onTog
     longPressTimer.current = setTimeout(() => {
       console.log('🔒 Long press detected on drag handle - starting drag');
       setDraggedIndex(index);
-      setTouchDragActive(true);
       isDraggingTouch.current = true;
 
       // Add haptic feedback if available
@@ -516,7 +495,6 @@ function Player({ currentView, currentSong, activePlaylistName, isPlaying, onTog
     // Reset state
     setDraggedIndex(null);
     setDragOverIndex(null);
-    setTouchDragActive(false);
     isDraggingTouch.current = false;
     draggedElement.current = null;
   };
@@ -537,7 +515,7 @@ function Player({ currentView, currentSong, activePlaylistName, isPlaying, onTog
       }
 
       try {
-        const ytPlayer = new window.YT.Player('youtube-player', {
+        new window.YT.Player('youtube-player', {
           height: '1',
           width: '1',
           videoId: '',
@@ -571,10 +549,6 @@ function Player({ currentView, currentSong, activePlaylistName, isPlaying, onTog
                 console.log('🔄 Loading new song, skipping state sync');
                 return;
               }
-
-              // Check if this is from external control (like notification)
-              const timeSinceLastAction = Date.now() - lastActionTimeRef.current;
-              const isExternalControl = timeSinceLastAction > 1000; // More than 1 second since last action
 
               // If player is paused (2) and we think it should be playing
               if (event.data === 2 && isPlayingRef.current) {
@@ -657,6 +631,7 @@ function Player({ currentView, currentSong, activePlaylistName, isPlaying, onTog
       // Don't destroy the player on unmount to avoid DOM errors
       // The player will be reused across component lifecycles
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // Empty deps - player only initializes once, callbacks use refs
 
   // Setup Media Session API handlers (always, even without a song)
@@ -787,7 +762,7 @@ function Player({ currentView, currentSong, activePlaylistName, isPlaying, onTog
     }
 
     console.log('📱 Media Session API initialized with handlers');
-  }, [currentSong, onTogglePlay, duration]);
+  }, [currentSong, onTogglePlay, duration, isPlaying]);
 
   // Update Media Session playback state
   useEffect(() => {
@@ -1190,14 +1165,6 @@ function Player({ currentView, currentSong, activePlaylistName, isPlaying, onTog
     }
   };
 
-  // Toggle lyrics panel
-  const toggleLyrics = () => {
-    if (!showLyrics && !lyrics && !lyricsLoading) {
-      fetchLyrics();
-    }
-    setShowLyrics(!showLyrics);
-  };
-
   // Toggle expanded view between 'playing' and 'lyrics'
   const toggleExpandedView = (view) => {
     if (view === 'lyrics' && !lyrics && !lyricsLoading) {
@@ -1495,8 +1462,6 @@ function Player({ currentView, currentSong, activePlaylistName, isPlaying, onTog
                         break;
                       }
                     }
-                    
-                    const lineOffset = activeIndex * 40; 
                     
                     return (
                       <div className="lyrics-scroller-container">

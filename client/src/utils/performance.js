@@ -55,10 +55,10 @@ export const getOptimizedImageUrl = (originalUrl, width = 300, quality = 80) => 
   // For YouTube thumbnails, we can request different sizes
   if (originalUrl.includes('ytimg.com')) {
     // YouTube thumbnail optimization
-    if (width <= 120) return originalUrl.replace(/\/[^\/]*\.jpg/, '/default.jpg');
-    if (width <= 320) return originalUrl.replace(/\/[^\/]*\.jpg/, '/mqdefault.jpg');
-    if (width <= 480) return originalUrl.replace(/\/[^\/]*\.jpg/, '/hqdefault.jpg');
-    return originalUrl.replace(/\/[^\/]*\.jpg/, '/maxresdefault.jpg');
+    if (width <= 120) return originalUrl.replace(/\/[^/]*\.jpg/, '/default.jpg');
+    if (width <= 320) return originalUrl.replace(/\/[^/]*\.jpg/, '/mqdefault.jpg');
+    if (width <= 480) return originalUrl.replace(/\/[^/]*\.jpg/, '/hqdefault.jpg');
+    return originalUrl.replace(/\/[^/]*\.jpg/, '/maxresdefault.jpg');
   }
   
   return originalUrl;

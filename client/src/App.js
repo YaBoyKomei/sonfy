@@ -7,7 +7,7 @@ import Player from './components/Player';
 import { getApiUrl } from './config';
 // import AudioPlayer from './components/AudioPlayer';
 import SongCard from './components/SongCard';
-import { SearchIcon, MusicIcon, HeartIcon, PlusIcon } from './components/Icons';
+import { SearchIcon, HeartIcon, PlusIcon } from './components/Icons';
 import { ChevronLeftIcon, ChevronRightIcon } from './components/ScrollButton';
 import { updateSEOForView, addSongStructuredData, preloadCriticalResources } from './utils/seo';
 
@@ -179,6 +179,7 @@ function App() {
       }, 1000);
       return () => clearTimeout(timer);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentView, likedSongs.length, listeningHistory.length]);
 
   const fetchAIRecommendations = async () => {
@@ -800,9 +801,10 @@ function App() {
     }
 
     // Generate unique name if album name already exists
+    const existingNames = new Set(playlists.map(p => p.name.toLowerCase()));
     let playlistName = albumName;
     let counter = 1;
-    while (playlists.find(p => p.name.toLowerCase() === playlistName.toLowerCase())) {
+    while (existingNames.has(playlistName.toLowerCase())) {
       playlistName = `${albumName} (${counter})`;
       counter++;
     }

@@ -2,7 +2,7 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import './index.css';
 import App from './App';
-import { registerServiceWorker, trackWebVitals, inlineCriticalCSS } from './utils/performance';
+import { trackWebVitals, inlineCriticalCSS } from './utils/performance';
 
 // Error Boundary Component
 class ErrorBoundary extends React.Component {
