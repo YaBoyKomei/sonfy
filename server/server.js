@@ -771,10 +771,11 @@ app.get('/api/next/:videoId', async (req, res) => {
       headers: reqHeaders,
       body: gzippedBody
     });
+    console.log(`📡 [Next API] WEB_REMIX status: ${response.status} for ${videoId}`);
 
     // If WEB_REMIX failed (e.g. 403 on cloud datacenter IP), try ANDROID_MUSIC client!
     if (!response.ok) {
-      console.warn(`WEB_REMIX radio request returned ${response.status}, retrying with ANDROID_MUSIC client...`);
+      console.warn(`WEB_REMIX radio request returned ${response.status}, retrying with ANDROID_MUSIC client on youtube.com...`);
       const androidPayload = {
         enablePersistentPlaylistPanel: true,
         videoId: videoId,
@@ -790,7 +791,8 @@ app.get('/api/next/:videoId', async (req, res) => {
         }
       };
 
-      response = await fetchFn(url, {
+      // Try www.youtube.com first (often bypasses datacenter blocks)
+      response = await fetchFn('https://www.youtube.com/youtubei/v1/next?prettyPrint=false', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -800,33 +802,22 @@ app.get('/api/next/:videoId', async (req, res) => {
         },
         body: JSON.stringify(androidPayload)
       });
-    }
+      console.log(`📡 [Next API] ANDROID_MUSIC (youtube.com) status: ${response.status}`);
 
-    // If still not ok, try without playlistId
-    if (!response.ok) {
-      console.warn(`ANDROID_MUSIC returned ${response.status}, retrying without playlistId...`);
-      response = await fetchFn(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'User-Agent': 'com.google.android.apps.youtube.music/7.02.52 (Linux; U; Android 14; en_US)',
-          'X-Youtube-Client-Name': '21',
-          'X-Youtube-Client-Version': '7.02.52'
-        },
-        body: JSON.stringify({
-          enablePersistentPlaylistPanel: true,
-          videoId: videoId,
-          isAudioOnly: true,
-          context: {
-            client: {
-              clientName: 'ANDROID_MUSIC',
-              clientVersion: '7.02.52',
-              hl: 'en',
-              gl: 'US'
-            }
-          }
-        })
-      });
+      if (!response.ok) {
+        console.warn(`ANDROID_MUSIC on youtube.com returned ${response.status}, retrying on music.youtube.com...`);
+        response = await fetchFn(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'User-Agent': 'com.google.android.apps.youtube.music/7.02.52 (Linux; U; Android 14; en_US)',
+            'X-Youtube-Client-Name': '21',
+            'X-Youtube-Client-Version': '7.02.52'
+          },
+          body: JSON.stringify(androidPayload)
+        });
+        console.log(`📡 [Next API] ANDROID_MUSIC (music.youtube.com) status: ${response.status}`);
+      }
     }
 
     const queue = [];
@@ -835,11 +826,22 @@ app.get('/api/next/:videoId', async (req, res) => {
       const data = await response.json();
 
       try {
-        const panelRenderer = data?.contents?.singleColumnMusicWatchNextResultsRenderer?.tabbedRenderer?.watchNextTabbedResultsRenderer?.tabs?.[0]?.tabRenderer?.content?.musicQueueRenderer?.content?.playlistPanelRenderer;
+        // Deep search for playlistPanelRenderer if standard path does not match
+        const findPanelRenderer = (obj, depth = 0) => {
+          if (!obj || typeof obj !== 'object' || depth > 10) return null;
+          if (obj.playlistPanelRenderer) return obj.playlistPanelRenderer;
+          for (const key of Object.keys(obj)) {
+            const found = findPanelRenderer(obj[key], depth + 1);
+            if (found) return found;
+          }
+          return null;
+        };
+
+        const panelRenderer = data?.contents?.singleColumnMusicWatchNextResultsRenderer?.tabbedRenderer?.watchNextTabbedResultsRenderer?.tabs?.[0]?.tabRenderer?.content?.musicQueueRenderer?.content?.playlistPanelRenderer || findPanelRenderer(data);
         const contents = panelRenderer?.contents || [];
         let playlistId = panelRenderer?.playlistId;
 
-        console.log(`🔍 Processing ${contents.length} items from queue for videoId: ${videoId}`);
+        console.log(`🔍 Processing ${contents.length} items from queue for videoId: ${videoId} (panel found: ${!!panelRenderer})`);
 
         for (const item of contents) {
           const renderer = item.playlistPanelVideoRenderer;
@@ -927,48 +929,151 @@ app.get('/api/next/:videoId', async (req, res) => {
       }
     }
 
-    // 🚀 BULLETPROOF FALLBACK: If YouTube radio returned 0 items (e.g. cloud datacenter IP blocked on next),
-    // find related tracks using searchYouTubeMusic so the user's queue is NEVER empty!
-    if (queue.length === 0) {
+    // 🛑 SEARCH SCRAPER FALLBACK IS DISABLED PER USER REQUEST
+    const ENABLE_SEARCH_FALLBACK = false;
+    if (ENABLE_SEARCH_FALLBACK && queue.length === 0) {
       console.log(`⚠️ Radio queue empty for ${videoId}, initiating smart search fallback...`);
-      try {
-        let searchQuery = '';
-        const titleParam = req.query.title;
-        const artistParam = req.query.artist;
-
-        if (artistParam && artistParam !== 'Unknown Artist' && !/^\d+:\d+$/.test(artistParam)) {
-          searchQuery = `${artistParam} songs`;
-        } else if (titleParam) {
-          searchQuery = titleParam;
-        } else {
-          // Fast public oEmbed to get title and artist
-          const oembedRes = await fetchFn(`https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`);
-          if (oembedRes.ok) {
-            const oembedData = await oembedRes.json();
-            const author = (oembedData.author_name || '').replace(/\s*-\s*Topic$/i, '').trim();
-            searchQuery = author ? `${author} songs` : (oembedData.title || '');
-          }
-        }
-
-        if (searchQuery) {
-          console.log(`🔍 Searching fallback songs for query: "${searchQuery}"`);
-          const searchResults = await searchYouTubeMusic(searchQuery, 30);
-          if (searchResults && Array.isArray(searchResults.songs)) {
-            const fallbackSongs = searchResults.songs.filter(s => s.id !== videoId && s.youtubeId !== videoId);
-            queue.push(...fallbackSongs);
-            console.log(`✨ Fallback loaded ${queue.length} songs for queue`);
-          }
-        }
-      } catch (fallbackErr) {
-        console.error('Fallback search error:', fallbackErr);
-      }
+      // Fallback code omitted while disabled
     }
 
-    console.log(`✅ Returning ${queue.length} music songs in queue for ${videoId}`);
+    if (queue.length === 0) {
+      console.warn(`⚠️ [Next API] Genuine queue returned 0 songs for ${videoId}. Search scraper fallback is DISABLED.`);
+    }
+
+    console.log(`✅ Returning ${queue.length} music songs from Next API in queue for ${videoId}`);
+    res.set('X-Queue-Source', 'genuine-next-api');
     res.json(queue);
   } catch (error) {
     console.error('Error fetching next songs:', error);
     res.json([]);
+  }
+});
+
+// Debug endpoint to test genuine Next API from server environment
+app.get('/api/debug-next/:videoId', async (req, res) => {
+  const { videoId } = req.params;
+  const radioPlaylistId = `RDAMVM${videoId}`;
+  const results = {};
+
+  try {
+    const fetchFn = globalThis.fetch || (await import('node-fetch')).default;
+    const session = await getYoutubeMusicSession();
+
+    // Test 1: WEB_REMIX on music.youtube.com
+    try {
+      const payload = {
+        enablePersistentPlaylistPanel: true,
+        videoId,
+        playlistId: radioPlaylistId,
+        isAudioOnly: true,
+        context: {
+          client: {
+            clientName: 'WEB_REMIX',
+            clientVersion: session.clientVersion,
+            hl: 'en',
+            gl: 'US',
+            visitorData: session.visitorData || undefined
+          }
+        }
+      };
+      const gzippedBody = zlib.gzipSync(JSON.stringify(payload));
+      const r1 = await fetchFn('https://music.youtube.com/youtubei/v1/next?prettyPrint=false', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Encoding': 'gzip',
+          'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64; rv:156.0) Gecko/20100101 Firefox/156.0',
+          'Origin': 'https://music.youtube.com',
+          'X-Youtube-Client-Name': '67',
+          'X-Youtube-Client-Version': session.clientVersion
+        },
+        body: gzippedBody
+      });
+      const t1 = await r1.text();
+      results.web_remix = {
+        status: r1.status,
+        hasPanel: t1.includes('playlistPanelRenderer'),
+        preview: t1.slice(0, 300)
+      };
+    } catch (e) {
+      results.web_remix = { error: e.message };
+    }
+
+    // Test 2: ANDROID_MUSIC on www.youtube.com
+    try {
+      const androidPayload = {
+        enablePersistentPlaylistPanel: true,
+        videoId,
+        playlistId: radioPlaylistId,
+        isAudioOnly: true,
+        context: {
+          client: {
+            clientName: 'ANDROID_MUSIC',
+            clientVersion: '7.02.52',
+            hl: 'en',
+            gl: 'US'
+          }
+        }
+      };
+      const r2 = await fetchFn('https://www.youtube.com/youtubei/v1/next?prettyPrint=false', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'User-Agent': 'com.google.android.apps.youtube.music/7.02.52 (Linux; U; Android 14; en_US)',
+          'X-Youtube-Client-Name': '21',
+          'X-Youtube-Client-Version': '7.02.52'
+        },
+        body: JSON.stringify(androidPayload)
+      });
+      const t2 = await r2.text();
+      results.android_music_youtube = {
+        status: r2.status,
+        hasPanel: t2.includes('playlistPanelRenderer'),
+        preview: t2.slice(0, 300)
+      };
+    } catch (e) {
+      results.android_music_youtube = { error: e.message };
+    }
+
+    // Test 3: ANDROID_MUSIC on music.youtube.com
+    try {
+      const androidPayload = {
+        enablePersistentPlaylistPanel: true,
+        videoId,
+        playlistId: radioPlaylistId,
+        isAudioOnly: true,
+        context: {
+          client: {
+            clientName: 'ANDROID_MUSIC',
+            clientVersion: '7.02.52',
+            hl: 'en',
+            gl: 'US'
+          }
+        }
+      };
+      const r3 = await fetchFn('https://music.youtube.com/youtubei/v1/next?prettyPrint=false', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'User-Agent': 'com.google.android.apps.youtube.music/7.02.52 (Linux; U; Android 14; en_US)',
+          'X-Youtube-Client-Name': '21',
+          'X-Youtube-Client-Version': '7.02.52'
+        },
+        body: JSON.stringify(androidPayload)
+      });
+      const t3 = await r3.text();
+      results.android_music_ytmusic = {
+        status: r3.status,
+        hasPanel: t3.includes('playlistPanelRenderer'),
+        preview: t3.slice(0, 300)
+      };
+    } catch (e) {
+      results.android_music_ytmusic = { error: e.message };
+    }
+
+    res.json({ videoId, session: { clientVersion: session.clientVersion, hasVisitorData: !!session.visitorData }, results });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
