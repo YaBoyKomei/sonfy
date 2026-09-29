@@ -772,19 +772,59 @@ app.get('/api/next/:videoId', async (req, res) => {
       body: gzippedBody
     });
 
-    // If initial request failed, retry with uncompressed payload without playlistId
+    // If WEB_REMIX failed (e.g. 403 on cloud datacenter IP), try ANDROID_MUSIC client!
     if (!response.ok) {
-      console.warn(`Direct radio request returned ${response.status}, retrying with plain payload...`);
-      const uncompressedHeaders = { ...reqHeaders };
-      delete uncompressedHeaders['Content-Encoding'];
+      console.warn(`WEB_REMIX radio request returned ${response.status}, retrying with ANDROID_MUSIC client...`);
+      const androidPayload = {
+        enablePersistentPlaylistPanel: true,
+        videoId: videoId,
+        playlistId: radioPlaylistId,
+        isAudioOnly: true,
+        context: {
+          client: {
+            clientName: 'ANDROID_MUSIC',
+            clientVersion: '7.02.52',
+            hl: 'en',
+            gl: 'US'
+          }
+        }
+      };
+
       response = await fetchFn(url, {
         method: 'POST',
-        headers: uncompressedHeaders,
+        headers: {
+          'Content-Type': 'application/json',
+          'User-Agent': 'com.google.android.apps.youtube.music/7.02.52 (Linux; U; Android 14; en_US)',
+          'X-Youtube-Client-Name': '21',
+          'X-Youtube-Client-Version': '7.02.52'
+        },
+        body: JSON.stringify(androidPayload)
+      });
+    }
+
+    // If still not ok, try without playlistId
+    if (!response.ok) {
+      console.warn(`ANDROID_MUSIC returned ${response.status}, retrying without playlistId...`);
+      response = await fetchFn(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'User-Agent': 'com.google.android.apps.youtube.music/7.02.52 (Linux; U; Android 14; en_US)',
+          'X-Youtube-Client-Name': '21',
+          'X-Youtube-Client-Version': '7.02.52'
+        },
         body: JSON.stringify({
           enablePersistentPlaylistPanel: true,
           videoId: videoId,
           isAudioOnly: true,
-          context: payload.context
+          context: {
+            client: {
+              clientName: 'ANDROID_MUSIC',
+              clientVersion: '7.02.52',
+              hl: 'en',
+              gl: 'US'
+            }
+          }
         })
       });
     }
