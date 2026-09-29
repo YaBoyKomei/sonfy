@@ -750,6 +750,8 @@ app.get('/api/next/:videoId', async (req, res) => {
       })
     });
     console.log(`📡 [Next API] WEB client (youtube.com) status: ${response.status} for ${videoId}`);
+    let responseText = await response.text();
+    console.log(`📦 [Next API] WEB client body snippet (${responseText.length} bytes): ${responseText.slice(0, 300)}`);
 
     // Strategy 2: If WEB client failed, try WEB_REMIX with session
     if (!response.ok) {
@@ -792,6 +794,8 @@ app.get('/api/next/:videoId', async (req, res) => {
         body: gzippedBody
       });
       console.log(`📡 [Next API] WEB_REMIX status: ${response.status}`);
+      responseText = await response.text();
+      console.log(`📦 [Next API] WEB_REMIX body snippet (${responseText.length} bytes): ${responseText.slice(0, 300)}`);
     }
 
     // Strategy 3: Try ANDROID_MUSIC if still not ok
@@ -823,14 +827,21 @@ app.get('/api/next/:videoId', async (req, res) => {
         body: JSON.stringify(androidPayload)
       });
       console.log(`📡 [Next API] ANDROID_MUSIC status: ${response.status}`);
+      responseText = await response.text();
+      console.log(`📦 [Next API] ANDROID_MUSIC body snippet (${responseText.length} bytes): ${responseText.slice(0, 300)}`);
     }
 
     const queue = [];
 
     if (response.ok) {
-      const data = await response.json();
-
+      let data = null;
       try {
+        data = JSON.parse(responseText);
+      } catch (jsonErr) {
+        console.error('Failed to parse JSON response:', jsonErr);
+      }
+
+      if (data) try {
         // Deep search for playlistPanelRenderer if standard path does not match
         const findPanelRenderer = (obj, depth = 0) => {
           if (!obj || typeof obj !== 'object' || depth > 10) return null;
@@ -966,6 +977,32 @@ app.get('/api/debug-next/:videoId', async (req, res) => {
   try {
     const fetchFn = globalThis.fetch || (await import('node-fetch')).default;
     const session = await getYoutubeMusicSession();
+
+    // Test 0: WEB on www.youtube.com
+    try {
+      const r0 = await fetchFn('https://www.youtube.com/youtubei/v1/next?prettyPrint=false', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36',
+          'X-Youtube-Client-Name': '1',
+          'X-Youtube-Client-Version': '2.20251015.01.00'
+        },
+        body: JSON.stringify({
+          videoId,
+          playlistId: radioPlaylistId,
+          context: { client: { clientName: 'WEB', clientVersion: '2.20251015.01.00', hl: 'en', gl: 'US' } }
+        })
+      });
+      const t0 = await r0.text();
+      results.web_youtube = {
+        status: r0.status,
+        hasPanel: t0.includes('playlistPanelVideoRenderer') || t0.includes('twoColumnWatchNextResults'),
+        preview: t0.slice(0, 400)
+      };
+    } catch (e) {
+      results.web_youtube = { error: e.message };
+    }
 
     // Test 1: WEB_REMIX on music.youtube.com
     try {
