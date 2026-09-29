@@ -1,6 +1,6 @@
 /**
  * Background YouTube Radio Loader
- * Uses an isolated, ephemeral YouTube IFrame player on the client to cue RDAMVM radio mixes
+ * Uses an isolated, in-viewport YouTube IFrame player on the client to cue RDAMVM radio mixes
  * and extract genuine YouTube Music recommendation queues without interrupting playback.
  */
 
@@ -11,9 +11,10 @@ const ensureContainerExists = () => {
   if (!container) {
     container = document.createElement('div');
     container.id = 'hidden-radio-loader';
+    // Kept in active viewport (bottom: 0, right: 0) with 0.01 opacity so browsers don't throttle or suspend iframe execution
     container.style.position = 'fixed';
-    container.style.bottom = '-9999px';
-    container.style.left = '-9999px';
+    container.style.bottom = '0px';
+    container.style.right = '0px';
     container.style.width = '1px';
     container.style.height = '1px';
     container.style.opacity = '0.01';
@@ -28,7 +29,7 @@ export const initRadioLoader = () => {
   ensureContainerExists();
 };
 
-const doFetchRadioVideoIds = async (seedVideoId, timeoutMs = 5000) => {
+const doFetchRadioVideoIds = async (seedVideoId, timeoutMs = 6000) => {
   if (!seedVideoId) return [];
 
   // Wait until window.YT is ready
@@ -90,22 +91,32 @@ const doFetchRadioVideoIds = async (seedVideoId, timeoutMs = 5000) => {
         playerVars: {
           autoplay: 0,
           controls: 0,
-          listType: 'playlist',
-          list: 'RDAMVM' + seedVideoId
+          disablekb: 1,
+          fs: 0
         },
         events: {
           onReady: (event) => {
             try {
               event.target.mute();
               event.target.setVolume(0);
-            } catch (e) {}
+              console.log(`📻 Background radio loader cueing RDAMVM${seedVideoId}`);
+              event.target.cuePlaylist({
+                list: 'RDAMVM' + seedVideoId,
+                listType: 'playlist',
+                index: 0
+              });
+            } catch (e) {
+              console.warn('Failed to cue playlist in onReady:', e);
+            }
           },
           onStateChange: (event) => {
             try {
-              const pl = event.target.getPlaylist();
-              if (Array.isArray(pl) && pl.length > 1 && (pl[0] === seedVideoId || pl.includes(seedVideoId))) {
-                console.log(`📻 Radio loader retrieved ${pl.length} tracks for seed ${seedVideoId}`);
-                done(pl);
+              if (event.target && event.target.getPlaylist) {
+                const pl = event.target.getPlaylist();
+                if (Array.isArray(pl) && pl.length > 0) {
+                  console.log(`📻 Radio loader onStateChange retrieved ${pl.length} tracks for ${seedVideoId}`);
+                  done(pl);
+                }
               }
             } catch (e) {}
           },
@@ -127,8 +138,8 @@ const doFetchRadioVideoIds = async (seedVideoId, timeoutMs = 5000) => {
       try {
         if (ephemeralPlayer && ephemeralPlayer.getPlaylist) {
           const pl = ephemeralPlayer.getPlaylist();
-          if (Array.isArray(pl) && pl.length > 1 && (pl[0] === seedVideoId || pl.includes(seedVideoId))) {
-            console.log(`📻 Radio loader retrieved ${pl.length} tracks for seed ${seedVideoId} (poll attempt ${attempts})`);
+          if (Array.isArray(pl) && pl.length > 0) {
+            console.log(`📻 Radio loader poll retrieved ${pl.length} tracks for seed ${seedVideoId} (attempt ${attempts})`);
             done(pl);
             return;
           }
@@ -150,7 +161,7 @@ const doFetchRadioVideoIds = async (seedVideoId, timeoutMs = 5000) => {
 /**
  * Serialized fetching of radio video IDs to prevent clashing player instances.
  */
-export const fetchRadioVideoIds = (seedVideoId, timeoutMs = 5000) => {
+export const fetchRadioVideoIds = (seedVideoId, timeoutMs = 6000) => {
   const nextPromise = pendingPromise.then(() => doFetchRadioVideoIds(seedVideoId, timeoutMs));
   pendingPromise = nextPromise.catch(() => {});
   return nextPromise;

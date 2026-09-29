@@ -71,7 +71,7 @@ const fetchRadioSongsClient = async (seedVideoId) => {
   }
 };
 
-// API Helper Functions (using client loader with server fallback)
+// API Helper Functions (using client loader with working search fallback)
 const fetchNextSongs = async (videoId, title = '', artist = '') => {
   try {
     console.log(`⏭️ Fetching next songs for: ${videoId} (${title} by ${artist})`);
@@ -87,18 +87,27 @@ const fetchNextSongs = async (videoId, title = '', artist = '') => {
       console.warn('Client radio loader attempt failed:', clientErr);
     }
 
-    // 2. Fallback: Server Next API
-    const params = new URLSearchParams();
-    if (title) params.append('title', title);
-    if (artist) params.append('artist', artist);
-    const qs = params.toString() ? `?${params.toString()}` : '';
-    const response = await fetch(getApiUrl(`/api/next/${videoId}${qs}`));
-    if (!response.ok) {
-      console.warn(`Next API error: ${response.status}`);
-      return [];
+    // 2. Fallback: Search for related songs by the artist via working search API (never 403 blocked)
+    const cleanArtist = (artist || '').replace(/\s*-\s*Topic$/i, '').trim();
+    if (cleanArtist && cleanArtist !== 'Unknown Artist') {
+      try {
+        console.log(`🔍 Radio loader fallback: fetching artist songs for "${cleanArtist}"`);
+        const searchRes = await fetch(getApiUrl(`/api/search?q=${encodeURIComponent(cleanArtist)}`));
+        if (searchRes.ok) {
+          const searchData = await searchRes.json();
+          const songs = Array.isArray(searchData) ? searchData : (searchData.songs || []);
+          const filtered = songs.filter(s => (s.youtubeId || s.id) !== videoId);
+          if (filtered.length > 0) {
+            console.log(`✅ Search fallback returned ${filtered.length} related songs for "${cleanArtist}"`);
+            return filtered.slice(0, 20);
+          }
+        }
+      } catch (searchErr) {
+        console.warn('Search fallback error:', searchErr);
+      }
     }
-    const data = await response.json();
-    return Array.isArray(data) ? data : [];
+
+    return [];
   } catch (error) {
     console.error('❌ Error fetching next songs:', error);
     return [];
@@ -2282,8 +2291,8 @@ function App() {
         id="hidden-radio-loader"
         style={{
           position: 'fixed',
-          bottom: -9999,
-          left: -9999,
+          bottom: 0,
+          right: 0,
           width: 1,
           height: 1,
           opacity: 0.01,
