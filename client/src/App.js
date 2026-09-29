@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import './App.css';
 import Sidebar from './components/Sidebar';
 import BottomNav from './components/BottomNav';
@@ -148,6 +148,7 @@ function App() {
   const [loadingAlbum, setLoadingAlbum] = useState(false);
   const [queue, setQueue] = useState([]); // Queue of next songs
   const [queueIndex, setQueueIndex] = useState(0); // Current position in queue
+  const usedRadioSeedsRef = useRef(new Set()); // Track seeds used to avoid duplicate queries and pick closest related songs
   const [playHistory, setPlayHistory] = useState(() => {
     const saved = localStorage.getItem('playHistory');
     return saved ? JSON.parse(saved) : [];
@@ -506,6 +507,7 @@ function App() {
     if (fetchNewQueue) {
       setQueue([song]);
       setQueueIndex(0);
+      usedRadioSeedsRef.current = new Set([song.youtubeId || song.id]);
     }
 
     // Fetch next songs in queue only if requested
@@ -634,16 +636,30 @@ function App() {
       if (songsRemaining <= 3 && nextSong.youtubeId) {
         try {
           console.log(`🔄 Approaching end of queue (${songsRemaining} songs left), extending queue...`);
-          const moreSongs = await fetchNextSongs(nextSong.youtubeId, nextSong.title, nextSong.artist);
+          // Pick closest unseeded song near nextSong
+          let candidate = nextSong;
+          const startIdx = nextIndex;
+          for (let i = startIdx; i < queue.length; i++) {
+            const vid = queue[i]?.youtubeId || queue[i]?.id;
+            if (vid && !usedRadioSeedsRef.current.has(vid)) {
+              candidate = queue[i];
+              break;
+            }
+          }
+          const candidateId = candidate?.youtubeId || candidate?.id;
+          if (candidateId) {
+            usedRadioSeedsRef.current.add(candidateId);
+            const moreSongs = await fetchNextSongs(candidateId, candidate.title, candidate.artist);
 
-          if (moreSongs && moreSongs.length > 0) {
-            setQueue(prev => {
-              const existingIds = new Set(prev.flatMap(s => [s.id, s.youtubeId].filter(Boolean)));
-              const newSongs = moreSongs.filter(s => !existingIds.has(s.id) && !existingIds.has(s.youtubeId));
-              if (newSongs.length === 0) return prev;
-              console.log(`✨ Extended queue with ${newSongs.length} new songs (total: ${prev.length + newSongs.length})`);
-              return [...prev, ...newSongs];
-            });
+            if (moreSongs && moreSongs.length > 0) {
+              setQueue(prev => {
+                const existingIds = new Set(prev.flatMap(s => [s.id, s.youtubeId].filter(Boolean)));
+                const newSongs = moreSongs.filter(s => !existingIds.has(s.id) && !existingIds.has(s.youtubeId));
+                if (newSongs.length === 0) return prev;
+                console.log(`✨ Extended queue with ${newSongs.length} related songs (total: ${prev.length + newSongs.length})`);
+                return [...prev, ...newSongs];
+              });
+            }
           }
         } catch (error) {
           console.error('❌ Error extending queue:', error);
@@ -759,14 +775,43 @@ function App() {
   const extendQueue = async () => {
     if (queue.length === 0) return;
 
-    // Get the last song in queue to fetch related songs
-    const lastSong = queue[queue.length - 1];
-    const seedId = lastSong?.youtubeId || lastSong?.id;
+    // Find the current song's position in queue
+    const currentPos = queue.findIndex(s => isSameSong(s, currentSong));
+    const startPos = currentPos >= 0 ? currentPos : 0;
+
+    // Pick the closest unseeded song near current playback (forward, then backward)
+    // This guarantees that all newly loaded songs are tightly related to the current music
+    let candidateSong = null;
+    for (let i = startPos; i < queue.length; i++) {
+      const vid = queue[i]?.youtubeId || queue[i]?.id;
+      if (vid && !usedRadioSeedsRef.current.has(vid)) {
+        candidateSong = queue[i];
+        break;
+      }
+    }
+
+    if (!candidateSong) {
+      for (let i = 0; i < queue.length; i++) {
+        const vid = queue[i]?.youtubeId || queue[i]?.id;
+        if (vid && !usedRadioSeedsRef.current.has(vid)) {
+          candidateSong = queue[i];
+          break;
+        }
+      }
+    }
+
+    if (!candidateSong) {
+      candidateSong = currentSong || queue[0];
+    }
+
+    const seedId = candidateSong?.youtubeId || candidateSong?.id;
     if (!seedId) return;
 
-    console.log(`📜 Extending queue based on: "${lastSong.title}" (${seedId})`);
+    usedRadioSeedsRef.current.add(seedId);
+    console.log(`📜 Extending queue with related songs based on: "${candidateSong.title}" (${seedId})`);
+
     try {
-      const moreSongs = await fetchNextSongs(seedId, lastSong.title, lastSong.artist);
+      const moreSongs = await fetchNextSongs(seedId, candidateSong.title, candidateSong.artist);
 
       if (moreSongs && moreSongs.length > 0) {
         setQueue(prev => {
@@ -774,7 +819,7 @@ function App() {
           const newSongs = moreSongs.filter(s => !existingIds.has(s.id) && !existingIds.has(s.youtubeId));
 
           if (newSongs.length > 0) {
-            console.log(`✨ Extended queue with ${newSongs.length} new songs (total: ${prev.length + newSongs.length})`);
+            console.log(`✨ Extended queue with ${newSongs.length} related songs (total: ${prev.length + newSongs.length})`);
             return [...prev, ...newSongs];
           } else {
             console.log(`⚠️ No new unique songs to add to queue`);
