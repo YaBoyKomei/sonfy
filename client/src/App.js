@@ -10,6 +10,7 @@ import SongCard from './components/SongCard';
 import { SearchIcon, HeartIcon, PlusIcon } from './components/Icons';
 import { ChevronLeftIcon, ChevronRightIcon } from './components/ScrollButton';
 import { updateSEOForView, addSongStructuredData, preloadCriticalResources } from './utils/seo';
+import { fetchRadioVideoIds, initRadioLoader } from './utils/radioLoader';
 
 // Resolve video metadata client-side via CORS-friendly oEmbed
 const resolveVideosClient = async (videoIds) => {
@@ -45,10 +46,37 @@ const resolveVideosClient = async (videoIds) => {
   return results.filter(Boolean);
 };
 
-// API Helper Functions (using server)
+// Resolve radio songs client-side via background loader and oEmbed
+const fetchRadioSongsClient = async (seedVideoId) => {
+  if (!seedVideoId) return [];
+  try {
+    const ids = await fetchRadioVideoIds(seedVideoId);
+    if (!ids || ids.length === 0) return [];
+    const nextVideoIds = ids.filter(id => id !== seedVideoId);
+    return await resolveVideosClient(nextVideoIds.slice(0, 25));
+  } catch (err) {
+    console.warn('fetchRadioSongsClient failed:', err);
+    return [];
+  }
+};
+
+// API Helper Functions (using client loader with server fallback)
 const fetchNextSongs = async (videoId, title = '', artist = '') => {
   try {
     console.log(`⏭️ Fetching next songs for: ${videoId} (${title} by ${artist})`);
+
+    // 1. Primary: Use client-side YouTube radio loader (bypasses datacenter 403 block)
+    try {
+      const clientSongs = await fetchRadioSongsClient(videoId);
+      if (clientSongs && clientSongs.length > 0) {
+        console.log(`✅ Client radio loader returned ${clientSongs.length} songs for ${videoId}`);
+        return clientSongs;
+      }
+    } catch (clientErr) {
+      console.warn('Client radio loader attempt failed:', clientErr);
+    }
+
+    // 2. Fallback: Server Next API
     const params = new URLSearchParams();
     if (title) params.append('title', title);
     if (artist) params.append('artist', artist);
@@ -147,6 +175,11 @@ function App() {
   const [loadingRecommendations, setLoadingRecommendations] = useState(false);
   const [savedAlbumPlaylist, setSavedAlbumPlaylist] = useState(null); // For album saved modal
   const [activePlaylistName, setActivePlaylistName] = useState(null);
+
+  // Initialize background radio loader on mount
+  useEffect(() => {
+    initRadioLoader();
+  }, []);
 
   // Save to localStorage unconditionally
   useEffect(() => {
@@ -621,17 +654,14 @@ function App() {
           console.log(`🔄 Approaching end of queue (${songsRemaining} songs left), extending queue...`);
           const moreSongs = await fetchNextSongs(nextSong.youtubeId, nextSong.title, nextSong.artist);
 
-          if (moreSongs.length > 0) {
-            // Filter out songs already in queue to avoid duplicates
-            const existingIds = new Set(queue.map(s => s.id));
-            const newSongs = moreSongs.filter(s => !existingIds.has(s.id));
-
-            if (newSongs.length > 0) {
-              setQueue(prev => [...prev, ...newSongs]);
-              console.log(`✨ Extended queue with ${newSongs.length} new songs (total: ${queue.length + newSongs.length})`);
-            } else {
-              console.log(`⚠️ No new unique songs to add to queue`);
-            }
+          if (moreSongs && moreSongs.length > 0) {
+            setQueue(prev => {
+              const existingIds = new Set(prev.flatMap(s => [s.id, s.youtubeId].filter(Boolean)));
+              const newSongs = moreSongs.filter(s => !existingIds.has(s.id) && !existingIds.has(s.youtubeId));
+              if (newSongs.length === 0) return prev;
+              console.log(`✨ Extended queue with ${newSongs.length} new songs (total: ${prev.length + newSongs.length})`);
+              return [...prev, ...newSongs];
+            });
           }
         } catch (error) {
           console.error('❌ Error extending queue:', error);
@@ -749,23 +779,26 @@ function App() {
 
     // Get the last song in queue to fetch related songs
     const lastSong = queue[queue.length - 1];
-    if (!lastSong || !lastSong.youtubeId) return;
+    const seedId = lastSong?.youtubeId || lastSong?.id;
+    if (!seedId) return;
 
-    console.log(`📜 Extending queue based on: "${lastSong.title}"`);
+    console.log(`📜 Extending queue based on: "${lastSong.title}" (${seedId})`);
     try {
-      const moreSongs = await fetchNextSongs(lastSong.youtubeId, lastSong.title, lastSong.artist);
+      const moreSongs = await fetchNextSongs(seedId, lastSong.title, lastSong.artist);
 
-      if (moreSongs.length > 0) {
-        // Filter out songs already in queue to avoid duplicates
-        const existingIds = new Set(queue.map(s => s.id));
-        const newSongs = moreSongs.filter(s => !existingIds.has(s.id));
+      if (moreSongs && moreSongs.length > 0) {
+        setQueue(prev => {
+          const existingIds = new Set(prev.flatMap(s => [s.id, s.youtubeId].filter(Boolean)));
+          const newSongs = moreSongs.filter(s => !existingIds.has(s.id) && !existingIds.has(s.youtubeId));
 
-        if (newSongs.length > 0) {
-          setQueue(prev => [...prev, ...newSongs]);
-          console.log(`✨ Extended queue with ${newSongs.length} new songs (total: ${queue.length + newSongs.length})`);
-        } else {
-          console.log(`⚠️ No new unique songs to add to queue`);
-        }
+          if (newSongs.length > 0) {
+            console.log(`✨ Extended queue with ${newSongs.length} new songs (total: ${prev.length + newSongs.length})`);
+            return [...prev, ...newSongs];
+          } else {
+            console.log(`⚠️ No new unique songs to add to queue`);
+            return prev;
+          }
+        });
       }
     } catch (error) {
       console.error('❌ Error extending queue:', error);
@@ -2218,6 +2251,21 @@ function App() {
           </div>
         </div>
       )}
+      {/* Hidden YouTube player for background radio queue loading */}
+      <div
+        id="hidden-radio-loader"
+        style={{
+          position: 'fixed',
+          bottom: -9999,
+          left: -9999,
+          width: 1,
+          height: 1,
+          opacity: 0.01,
+          pointerEvents: 'none',
+          zIndex: -9999
+        }}
+        aria-hidden="true"
+      />
     </div>
   );
 }

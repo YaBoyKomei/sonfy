@@ -317,6 +317,11 @@ function Player({ currentView, currentSong, activePlaylistName, isPlaying, onTog
     return () => queueList.removeEventListener('scroll', handleScroll);
   }, [showQueue, queue.length, onExtendQueue, isLoadingMore]);
 
+  // Reset loading more state when queue changes
+  useEffect(() => {
+    setIsLoadingMore(false);
+  }, [queue.length]);
+
   useEffect(() => {
     autoplayRef.current = autoplay;
   }, [autoplay]);
@@ -1443,6 +1448,34 @@ function Player({ currentView, currentSong, activePlaylistName, isPlaying, onTog
               <div className="queue-loading">
                 <div className="queue-loading-spinner"></div>
                 <span>Loading more songs...</span>
+              </div>
+            )}
+            {/* Manual load more button at end of queue */}
+            {queue.length > 0 && !isLoadingMore && onExtendQueue && (
+              <div style={{ textAlign: 'center', padding: '16px 0 24px' }}>
+                <button
+                  type="button"
+                  className="queue-load-more-btn"
+                  onClick={() => {
+                    setIsLoadingMore(true);
+                    onExtendQueue();
+                  }}
+                  style={{
+                    background: 'rgba(255, 255, 255, 0.08)',
+                    color: '#e5e7eb',
+                    border: '1px solid rgba(255, 255, 255, 0.15)',
+                    borderRadius: '20px',
+                    padding: '8px 20px',
+                    cursor: 'pointer',
+                    fontSize: '13px',
+                    fontWeight: 500,
+                    transition: 'all 0.2s ease'
+                  }}
+                  onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(255, 255, 255, 0.16)'; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(255, 255, 255, 0.08)'; }}
+                >
+                  + Load More Songs
+                </button>
               </div>
             )}
           </div>
