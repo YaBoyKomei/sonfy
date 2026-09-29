@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import './App.css';
 import Sidebar from './components/Sidebar';
 import BottomNav from './components/BottomNav';
@@ -10,6 +10,40 @@ import SongCard from './components/SongCard';
 import { SearchIcon, HeartIcon, PlusIcon } from './components/Icons';
 import { ChevronLeftIcon, ChevronRightIcon } from './components/ScrollButton';
 import { updateSEOForView, addSongStructuredData, preloadCriticalResources } from './utils/seo';
+
+// Resolve video metadata client-side via CORS-friendly oEmbed
+const resolveVideosClient = async (videoIds) => {
+  if (!videoIds || !videoIds.length) return [];
+  const uniqueIds = [...new Set(videoIds)].slice(0, 25);
+
+  const results = await Promise.all(
+    uniqueIds.map(async (id) => {
+      try {
+        const res = await fetch(`https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${id}&format=json`);
+        if (res.ok) {
+          const data = await res.json();
+          const cleanAuthor = (data.author_name || 'Unknown Artist').replace(/\s*-\s*Topic$/i, '').trim();
+          return {
+            id,
+            youtubeId: id,
+            title: data.title || 'Unknown Title',
+            artist: cleanAuthor,
+            cover: data.thumbnail_url || `https://i.ytimg.com/vi/${id}/hqdefault.jpg`
+          };
+        }
+      } catch (e) {}
+      return {
+        id,
+        youtubeId: id,
+        title: 'YouTube Track',
+        artist: 'Unknown Artist',
+        cover: `https://i.ytimg.com/vi/${id}/hqdefault.jpg`
+      };
+    })
+  );
+
+  return results.filter(Boolean);
+};
 
 // API Helper Functions (using server)
 const fetchNextSongs = async (videoId, title = '', artist = '') => {
@@ -472,6 +506,36 @@ function App() {
       return !prev;
     });
   };
+
+  const lastLoadedRadioSeedRef = useRef(null);
+
+  const handleRadioQueueLoaded = useCallback(async (videoIds, seedVideoId) => {
+    if (!videoIds || videoIds.length <= 1) return;
+    if (seedVideoId && lastLoadedRadioSeedRef.current === seedVideoId) return;
+
+    const nextVideoIds = videoIds.filter(id => id !== seedVideoId);
+    if (nextVideoIds.length === 0) return;
+
+    if (seedVideoId) {
+      lastLoadedRadioSeedRef.current = seedVideoId;
+    }
+    console.log(`📻 Client player loaded ${nextVideoIds.length} radio tracks. Resolving metadata...`);
+
+    const resolvedSongs = await resolveVideosClient(nextVideoIds.slice(0, 25));
+    if (resolvedSongs.length > 0) {
+      setQueue(prevQueue => {
+        const currentId = prevQueue[0]?.youtubeId || prevQueue[0]?.id;
+        if (currentId && seedVideoId && currentId !== seedVideoId && prevQueue.length > 1) {
+          return prevQueue;
+        }
+        const existingIds = new Set(prevQueue.map(s => s.youtubeId || s.id));
+        const newSongs = resolvedSongs.filter(s => !existingIds.has(s.youtubeId || s.id));
+        if (newSongs.length === 0) return prevQueue;
+        console.log(`✨ Added ${newSongs.length} genuine radio songs to queue via client player`);
+        return [...prevQueue, ...newSongs];
+      });
+    }
+  }, []);
 
   const playNext = async () => {
     console.log('🎵 playNext called');
@@ -1876,6 +1940,7 @@ function App() {
             setSelectedSongForPlaylist(song);
             setShowAddToPlaylist(true);
           }}
+          onRadioQueueLoaded={handleRadioQueueLoaded}
         />
       )}
 
