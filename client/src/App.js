@@ -630,10 +630,10 @@ function App() {
         }
       }));
 
-      // 🔥 INFINITE QUEUE: Load more songs when approaching the end
-      // Check if we're within the last 3 songs of the queue
+      // 🔥 INFINITE QUEUE: Automatically load more songs well before the end
+      // Check if we're within the last 6 songs of the queue
       const songsRemaining = queue.length - nextIndex - 1;
-      if (songsRemaining <= 3 && nextSong.youtubeId) {
+      if (songsRemaining <= 6 && (nextSong.youtubeId || nextSong.id)) {
         try {
           console.log(`🔄 Approaching end of queue (${songsRemaining} songs left), extending queue...`);
           // Pick closest unseeded song near nextSong

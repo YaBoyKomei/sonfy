@@ -106,6 +106,9 @@ function Player({ currentView, currentSong, activePlaylistName, isPlaying, onTog
   const currentSongRef = useRef(currentSong);
   const queueRef = useRef(queue);
   const activePlaylistNameRef = useRef(activePlaylistName);
+  const queueEndSentinelRef = useRef(null);
+  const queueListRef = useRef(null);
+  const isLoadingMoreRef = useRef(isLoadingMore);
 
   // Setup global SonfyControl object for native communication
   useEffect(() => {
@@ -281,44 +284,54 @@ function Player({ currentView, currentSong, activePlaylistName, isPlaying, onTog
     playerRef.current = player;
   }, [player]);
 
-  // Infinite scroll for queue panel
+  useEffect(() => {
+    isLoadingMoreRef.current = isLoadingMore;
+  }, [isLoadingMore]);
+
+  // Automatic infinite scroll for queue panel via IntersectionObserver
   useEffect(() => {
     if (!showQueue || !onExtendQueue) return;
 
-    const queueList = document.querySelector('.queue-list');
-    if (!queueList) return;
+    const sentinel = queueEndSentinelRef.current;
+    const root = queueListRef.current;
+    if (!sentinel || !root) return;
 
-    const handleScroll = () => {
-      if (isLoadingMore) return;
+    let isFetching = false;
 
-      const scrollTop = queueList.scrollTop;
-      const scrollHeight = queueList.scrollHeight;
-      const clientHeight = queueList.clientHeight;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const [entry] = entries;
+        if (entry.isIntersecting && !isFetching && !isLoadingMoreRef.current && queueRef.current.length > 0) {
+          console.log('📜 Automatic infinite scroll sentinel reached: auto-loading more songs...');
+          isFetching = true;
+          setIsLoadingMore(true);
+          isLoadingMoreRef.current = true;
+          onExtendQueue();
 
-      // Check if user scrolled near the bottom (within 200px)
-      const isNearBottom = scrollTop + clientHeight >= scrollHeight - 200;
-
-      if (isNearBottom && queue.length > 0) {
-        console.log('📜 Near bottom of queue, loading more songs...');
-        setIsLoadingMore(true);
-        
-        // Extend the queue with more songs
-        onExtendQueue();
-        
-        // Reset loading state after a delay
-        setTimeout(() => {
-          setIsLoadingMore(false);
-        }, 3000);
+          // Cooldown to prevent multiple rapid triggers
+          setTimeout(() => {
+            isFetching = false;
+          }, 1500);
+        }
+      },
+      {
+        root: root,
+        rootMargin: '350px', // Pre-fetch 350px before reaching bottom
+        threshold: 0.05
       }
-    };
+    );
 
-    queueList.addEventListener('scroll', handleScroll);
-    return () => queueList.removeEventListener('scroll', handleScroll);
-  }, [showQueue, queue.length, onExtendQueue, isLoadingMore]);
+    observer.observe(sentinel);
+
+    return () => {
+      observer.disconnect();
+    };
+  }, [showQueue, onExtendQueue]);
 
   // Reset loading more state when queue changes
   useEffect(() => {
     setIsLoadingMore(false);
+    isLoadingMoreRef.current = false;
   }, [queue.length]);
 
   useEffect(() => {
@@ -1278,7 +1291,7 @@ function Player({ currentView, currentSong, activePlaylistName, isPlaying, onTog
               <button className="queue-close-btn" onClick={onToggleQueue}>✕</button>
             </div>
           </div>
-          <div className="queue-list">
+          <div className="queue-list" ref={queueListRef}>
             {/* Queue Songs */}
             {queue.length > 0 ? (
               queue.map((song, index) => {
@@ -1393,39 +1406,15 @@ function Player({ currentView, currentSong, activePlaylistName, isPlaying, onTog
                 <p>No songs in queue</p>
               </div>
             )}
-            {/* Loading indicator for infinite scroll */}
+            {/* Sentinel element that automatically triggers load when scrolled into view */}
+            {queue.length > 0 && (
+              <div ref={queueEndSentinelRef} style={{ height: '30px', margin: '4px 0', opacity: 0 }} aria-hidden="true" />
+            )}
+            {/* Loading indicator for automatic infinite scroll */}
             {isLoadingMore && (
               <div className="queue-loading">
                 <div className="queue-loading-spinner"></div>
                 <span>Loading more songs...</span>
-              </div>
-            )}
-            {/* Manual load more button at end of queue */}
-            {queue.length > 0 && !isLoadingMore && onExtendQueue && (
-              <div style={{ textAlign: 'center', padding: '16px 0 24px' }}>
-                <button
-                  type="button"
-                  className="queue-load-more-btn"
-                  onClick={() => {
-                    setIsLoadingMore(true);
-                    onExtendQueue();
-                  }}
-                  style={{
-                    background: 'rgba(255, 255, 255, 0.08)',
-                    color: '#e5e7eb',
-                    border: '1px solid rgba(255, 255, 255, 0.15)',
-                    borderRadius: '20px',
-                    padding: '8px 20px',
-                    cursor: 'pointer',
-                    fontSize: '13px',
-                    fontWeight: 500,
-                    transition: 'all 0.2s ease'
-                  }}
-                  onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(255, 255, 255, 0.16)'; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(255, 255, 255, 0.08)'; }}
-                >
-                  + Load More Songs
-                </button>
               </div>
             )}
           </div>
